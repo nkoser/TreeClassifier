@@ -16,29 +16,29 @@ import shutil
 import subprocess
 from pathlib import Path
 
-MODELCARD = """# Depth Pro, feinabgestimmt auf FORTRESS (UAV-Nadir, metrische Hoehe)
+MODELCARD = """# Depth Pro, fine-tuned on FORTRESS (UAV nadir, metric height)
 
-Ausgangsmodell: `apple/DepthPro-hf`
-Feinabgestimmt auf: FORTRESS (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) --
-47 UAV-Gebiete im Suedschwarzwald mit Orthomosaik und normalisiertem
-Hoehenmodell (nDSM).
+Base model: `apple/DepthPro-hf`
+Fine-tuned on: FORTRESS (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) --
+47 UAV sites in the southern Black Forest with orthomosaic and normalised
+height model (nDSM).
 
-## Wofuer
+## What it is for
 
-Depth Pro von der Stange ist auf Bodenperspektiven trainiert. Bei Nadirbildern
-aus einer Drohne stimmt die Struktur oft, die **Skala** aber nicht -- Kronen
-sitzen zu hoch, Baumhoehen kommen zu klein heraus. Dieser Checkpoint korrigiert
-das fuer genau diesen Aufnahmefall: Blick senkrecht nach unten, Flughoehe
-zwischen etwa 25 und 120 m, Wald.
+Off-the-shelf Depth Pro is trained on ground-level perspectives. On nadir images
+from a drone the structure is often right but the **scale** is not -- crowns sit
+too high, tree heights come out too small. This checkpoint corrects that for
+exactly this capture situation: view straight down, flight altitude between about
+25 and 120 m, forest.
 
-## Laden und anwenden
+## Loading and applying
 
 ```python
 import numpy as np, torch
 from transformers import AutoImageProcessor, DepthProForDepthEstimation
 
-model = DepthProForDepthEstimation.from_pretrained("PFAD").eval()
-processor = AutoImageProcessor.from_pretrained("PFAD")
+model = DepthProForDepthEstimation.from_pretrained("PATH").eval()
+processor = AutoImageProcessor.from_pretrained("PATH")
 
 bild = ...                       # RGB uint8, HxWx3
 inputs = processor(images=bild, return_tensors="pt")
@@ -46,30 +46,28 @@ with torch.no_grad():
     ausgabe = model(**inputs)
 ```
 
-### Wichtig: den Bildwinkel vorgeben, nicht schaetzen lassen
+### Important: supply the field of view, do not let it be estimated
 
-> **Das ist die Angabe, an der alles haengt.** Ein Fehler im Bildwinkel geht
-> linear in jede Tiefe ein und ist der Tiefenkarte nicht anzusehen -- sie sieht
-> richtig aus und ist es nicht. Im Ursprungsprojekt war der angenommene Wert
-> (73.7 Grad) um Faktor 1.7 daneben; die Rueckrechnung aus Frames mit bekannter
-> Flughoehe ergab rund 48 Grad. Wer dieses Modell auf eine andere Kamera
-> anwendet, sollte den Wert aus EXIF nehmen oder kalibrieren.
+> **This is the setting everything depends on.** An error in the field of view
+> enters every depth linearly and cannot be seen in the depth map -- it looks
+> right and is not. In the originating project the assumed value (73.7 degrees)
+> was off by a factor of 1.7; back-calculation from frames with a known flight
+> altitude gave around 48 degrees. Anyone applying this model to a different
+> camera should take the value from EXIF or calibrate it.
 
-Depth Pro sagt kanonische inverse Tiefe voraus. Meter entstehen erst durch die
-Kamera:
+Depth Pro predicts canonical inverse depth. Metres only arise via the camera:
 
-    d = (f_px / Bildbreite) / D_roh
+    d = (f_px / image width) / D_raw
 
-Der eingebaute Bildwinkelkopf schaetzt `f_px` mit -- er ist aber auf
-Bodenperspektiven trainiert und liegt bei Nadiraufnahmen regelmaessig daneben.
-Ein Fehler dort geht **linear** in jede Tiefe ein. Bei bekannter Kamera also
-selbst rechnen:
+The built-in field-of-view head estimates `f_px` as well -- but it is trained on
+ground-level perspectives and is regularly wrong on nadir captures. An error
+there enters every depth **linearly**. With a known camera, compute it yourself:
 
 ```python
 f_px = 0.5 * bildbreite / np.tan(np.radians(HFOV_GRAD) / 2)
 
-# Der Hugging-Face-Prozessor hat keinen Parameter fuer ein bekanntes f_px und
-# wuerde hier den unveraenderten Bildwinkelkopf benutzen. Deshalb direkt:
+# The Hugging Face processor has no parameter for a known f_px and would use the
+# unchanged field-of-view head here. So do it directly:
 D = torch.nn.functional.interpolate(
     ausgabe.predicted_depth[:, None], size=bild.shape[:2],
     mode="bilinear", align_corners=False)[0, 0]
@@ -77,55 +75,56 @@ tiefe_m = (f_px / bildbreite) / D.clamp_min(1e-6)
 hoehe_ueber_boden = flughoehe_m - tiefe_m
 ```
 
-`inferenz.py` in diesem Ordner macht genau das; `beispiel.py` zeigt es an einem
-Bild. Trainiert wurde mit vorgegebenem `f_px`, deshalb ist dies auch der Weg,
-auf dem die unten stehenden Zahlen zustande kommen.
+`inferenz.py` in this folder does exactly that; `beispiel.py` shows it on an
+image. Training used a supplied `f_px`, so this is also the route by which the
+numbers below come about.
 
-Ohne bekannte Flughoehe bleibt die **Kronenhoehe** ablesbar, denn sie ist eine
-Differenz und braucht keinen Bezugspunkt:
+Without a known flight altitude the **crown height** remains readable, because it
+is a difference and needs no reference point:
 
-    Kronenhoehe = 95. Perzentil der Tiefe - 2. Perzentil der Tiefe
+    crown height = 95th percentile of the depth - 2nd percentile of the depth
 
-## Wie trainiert wurde
+## How it was trained
 
-Aus Orthomosaik und nDSM werden virtuelle Nadirframes gerechnet: eine Kamera in
-Hoehe `H` ueber dem Bestand, Tiefe `d = H - nDSM`, Bodenaufloesung `H / f_px`.
-Flughoehe, Bildwinkel und Position werden je Ausschnitt gewuerfelt. Der Verlust
-ist {verlustbeschreibung} plus mehrskalige Gradientenanpassung. Die
-Ausgabe bleibt kanonische inverse Tiefe. Der Checkpoint ist mit den normalen
-Hugging-Face-Klassen ladbar; die metrische Nachrechnung benoetigt wie oben
-gezeigt den bekannten Bildwinkel.
+Virtual nadir frames are computed from the orthomosaic and nDSM: a camera at
+height `H` above the stand, depth `d = H - nDSM`, ground sampling `H / f_px`.
+Flight altitude, field of view and position are drawn at random per crop. The
+loss is {verlustbeschreibung} plus multi-scale gradient matching. The output
+stays canonical inverse depth. The checkpoint is loadable with the normal
+Hugging Face classes; the metric conversion needs the known field of view as
+shown above.
 
-Aufgeteilt wurde nach Gebieten. Die unten genannten Gebiete des Testsplits waren
-im Training nie zu sehen.
+The split is by site. The test-split sites named below were never seen in
+training.
 
 {einstellungen}
 
-## Guete
+## Quality
 
 {metriken}
 
-## Grenzen
+## Limits
 
-- **Flughoehe 25 bis 120 m, Nadirblick, Wald.** Ausserhalb davon ist nichts
-  zugesichert. Schraege Aufnahmen kamen im Training nicht vor.
-- **Ueber 120 m wird extrapoliert.** Die FORTRESS-Gebiete sind 130 m breit; eine
-  Aufnahme aus 100 m mit weitem Bildwinkel deckt mehr ab, als ein Gebiet
-  hergibt. Der Fall 80 m ist voll abgedeckt.
-- **Die Wahrheit stammt aus Orthomosaiken**, nicht aus echten Einzelaufnahmen.
-  Ein Ortho zeigt jeden Baum von genau oben, ein Foto zeigt Kronenflanken zum
-  Bildrand hin. Fuer die Hoehe eines Baumes spielt das kaum eine Rolle, fuer die
-  genaue Lage seiner Kante etwas mehr.
-- **Die tiefste Stelle im Bild ist nicht der Boden.** Im geschlossenen
-  Kronendach liegt sie im Median bei 0.92 der Flughoehe. Wer die Hoehe ueber
-  Boden aus einer angenommenen Flughoehe rechnet, sollte das einkalkulieren.
-- **Ohne bekannte Flughoehe** bleibt die Kronenhoehe ablesbar (eine Differenz
-  braucht keinen Bezugspunkt), die absolute Hoehe ueber Boden nicht.
+- **Flight altitude 25 to 120 m, nadir view, forest.** Outside that nothing is
+  guaranteed. Oblique captures did not occur in training.
+- **Above 120 m it extrapolates.** The FORTRESS sites are 130 m wide; a capture
+  from 100 m with a wide field of view covers more than a site provides. The
+  80 m case is fully covered.
+- **The truth comes from orthomosaics**, not from real single captures. An ortho
+  shows every tree from exactly above, a photograph shows crown flanks towards
+  the image edge. For the height of a tree that hardly matters, for the exact
+  position of its edge somewhat more.
+- **The deepest point in the image is not the ground.** In a closed canopy it
+  lies at 0.92 of the flight altitude at the median. Anyone computing the height
+  above ground from an assumed flight altitude should factor that in.
+- **Without a known flight altitude** the crown height stays readable (a
+  difference needs no reference point), the absolute height above ground does
+  not.
 
-## Herkunft der Daten
+## Provenance of the data
 
-FORTRESS, Schiefer, Frey & Kattenborn 2022, CC BY 4.0. Wer Ergebnisse dieses
-Modells veroeffentlicht, sollte den Datensatz zitieren.
+FORTRESS, Schiefer, Frey & Kattenborn 2022, CC BY 4.0. Anyone publishing results
+from this model should cite the dataset.
 """
 
 BEISPIEL = '''"""Kleinstes lauffaehiges Beispiel fuer den feinabgestimmten Checkpoint."""
@@ -162,7 +161,7 @@ print("-> hoehe.png")
 
 
 def tabelle(werte: dict[str, dict[str, float]], spalten: list[str]) -> str:
-    kopf = "| Variante | " + " | ".join(spalten) + " |"
+    kopf = "| Variant | " + " | ".join(spalten) + " |"
     trenn = "|---" * (len(spalten) + 1) + "|"
     zeilen = [f"| `{name}` | " + " | ".join(f"{eintrag.get(s, float('nan')):.3f}" for s in spalten) + " |"
               for name, eintrag in werte.items()]
@@ -200,35 +199,35 @@ def main() -> None:
     (ziel / "beispiel.py").write_text(BEISPIEL)
 
     einstellungen, gebiete = "", ""
-    verlustbeschreibung = "nicht in den Checkpoint-Metadaten dokumentiert"
+    verlustbeschreibung = "not documented in the checkpoint metadata"
     depthft = ziel / "depthft.json"
     if depthft.exists():
         info = json.loads(depthft.read_text())
         verlustbeschreibung = (
-            "Huber auf der metrischen Hoehe"
+            "Huber on the metric height"
             if info.get("loss") == "huber_hoehe"
-            else "L1 auf der Log-Tiefe (alter Trainingsstand)"
+            else "L1 on the log depth (older training state)"
         )
         einstellungen = (
-            "| Einstellung | Wert |\n|---|---|\n"
-            f"| trainierte Teile | `{info.get('trainable')}` |\n"
-            f"| Flughoehe | {info.get('hoehe_min')} bis {info.get('hoehe_max')} m |\n"
-            f"| Bildwinkel | {info.get('fov_min')} bis {info.get('fov_max')} Grad |\n"
-            f"| Ausschnitt | {info.get('crop_px')} px |\n"
-            f"| beste Epoche | {info.get('epoche')} |\n"
+            "| Setting | Value |\n|---|---|\n"
+            f"| trained parts | `{info.get('trainable')}` |\n"
+            f"| flight altitude | {info.get('hoehe_min')} to {info.get('hoehe_max')} m |\n"
+            f"| field of view | {info.get('fov_min')} to {info.get('fov_max')} degrees |\n"
+            f"| crop | {info.get('crop_px')} px |\n"
+            f"| best epoch | {info.get('epoche')} |\n"
         )
         gebiete = ", ".join(info.get("train_gebiete", []))
         if gebiete:
-            einstellungen += f"\nTrainingsgebiete: {gebiete}\n"
+            einstellungen += f"\nTraining sites: {gebiete}\n"
 
-    metriken = "_Noch nicht ausgewertet -- `depthft/evaluate.py` liefert die Zahlen._"
+    metriken = "_Not yet evaluated -- `depthft/evaluate.py` supplies the numbers._"
     if args.metriken.exists():
         daten = json.loads(args.metriken.read_text())
-        metriken = (f"Auf {daten['ausschnitte']} Ausschnitten der Testgebiete "
-                    f"({', '.join(daten['gebiete'])}), die im Training nicht vorkamen:\n\n"
+        metriken = (f"On {daten['ausschnitte']} crops of the test sites "
+                    f"({', '.join(daten['gebiete'])}), which did not occur in training:\n\n"
                     + tabelle(daten["varianten"], ["absrel", "mae_m", "rmse_m", "bias_m", "delta125"])
-                    + "\n\n`mae_m` ist zugleich der Fehler der Hoehe ueber Boden -- die Flughoehe "
-                      "kuerzt sich in der Differenz heraus.")
+                    + "\n\n`mae_m` is at the same time the error of the height above ground -- the "
+                      "flight altitude cancels out in the difference.")
 
     (ziel / "README.md").write_text(MODELCARD.format(
         einstellungen=einstellungen, metriken=metriken,

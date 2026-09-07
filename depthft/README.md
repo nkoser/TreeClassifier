@@ -1,141 +1,139 @@
-# depthft — Depth Pro auf FORTRESS feinabstimmen
+# depthft — fine-tuning Depth Pro on FORTRESS
 
-> **Stand der Gewichte:** Der vorhandene Lauf unter
-> `/scratch/shared/$USER/runs/depthft` wurde noch mit dem alten
-> Log-Tiefen-Loss trainiert. Der korrigierte Code schreibt neue Läufe
-> standardmäßig nach `/scratch/shared/$USER/runs/depthft_huber_v2`; die alten
-> Gewichte werden nicht überschrieben.
+> **State of the weights:** the existing run under
+> `/scratch/shared/$USER/runs/depthft` was still trained with the old log-depth
+> loss. The corrected code writes new runs to
+> `/scratch/shared/$USER/runs/depthft_huber_v2` by default; the old weights are
+> not overwritten.
 
-Eigener Ordner, damit an der bestehenden Pipeline nichts angefasst wird. Die
-Skripte hier importieren nur untereinander, nicht aus dem
-Repo-Wurzelverzeichnis.
+A folder of its own, so that nothing in the existing pipeline has to be touched.
+The scripts here import only from each other, never from the repository root.
 
-## Das Problem
+## The problem
 
-Depth Pro liefert zu unseren Frames Tiefenkarten, aber die Höhe stimmt nicht:
-Kronen sitzen zu hoch, Baumhöhen kommen zu klein heraus. Das ist kein Zufall.
-Depth Pro ist auf Bodenperspektiven trainiert — Straßen, Innenräume, Portraits.
-Eine Nadiraufnahme aus 80 m kommt darin nicht vor. Was das Modell gelernt hat,
-ist die **Struktur** einer Szene; was es nicht gelernt hat, ist der **Maßstab**
-eines Aufnahmefalls, den es nie gesehen hat.
+Depth Pro produces depth maps for our frames, but the height is wrong: crowns
+sit too high, tree heights come out too small. That is not a coincidence. Depth
+Pro is trained on ground-level perspectives — streets, interiors, portraits. A
+nadir shot from 80 m does not occur in that. What the model has learned is the
+**structure** of a scene; what it has not learned is the **scale** of a capture
+situation it has never seen.
 
-Genau das ist reparierbar, sobald Wahrheit vorliegt.
+That is exactly what can be repaired, once truth is available.
 
-## Woher die Wahrheit kommt
+## Where the truth comes from
 
-**FORTRESS** (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) liegt unter
-`/scratch/shared/$USER/data/fortress`: 47 UAV-Gebiete im Südschwarzwald zu je
-1,7 ha, Orthomosaik bei 0,77–1,57 cm/px, dazu je Gebiet ein **normalisiertes
-Höhenmodell** (nDSM) — Meter über Boden, für jeden Bildpunkt.
+**FORTRESS** (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) lives under
+`/scratch/shared/$USER/data/fortress`: 47 UAV sites in the southern Black
+Forest, 1.7 ha each, orthomosaic at 0.77–1.57 cm/px, plus one **normalised
+height model** (nDSM) per site — metres above ground, for every pixel.
 
-Direkt trainieren lässt sich damit nicht. Ein Orthomosaik ist kein Foto: es hat
-keine Kamera, keinen Bildwinkel, keine Tiefe. Die entsteht erst durch eine
-Annahme — hänge eine Nadirkamera in Höhe `H` über den Bestand:
+You cannot train on that directly. An orthomosaic is not a photograph: it has no
+camera, no field of view, no depth. Depth only arises from an assumption — hang
+a nadir camera at altitude `H` above the stand:
 
 ```
-Tiefe        d    = H - nDSM
-Bodenauflös. GSD  = H / f_px
-Bodenbreite       = 2 * H * tan(HFOV / 2)
+depth        d    = H - nDSM
+ground samp. GSD  = H / f_px
+ground width      = 2 * H * tan(HFOV / 2)
 ```
 
-Aus einem Gebiet werden damit beliebig viele **virtuelle Frames mit exakter
-metrischer Tiefenkarte**, in beliebiger Flughöhe. Flughöhe, Bildwinkel und
-Position werden je Ausschnitt gewürfelt.
+A site thereby yields arbitrarily many **virtual frames with an exact metric
+depth map**, at any flight altitude. Altitude, field of view and position are
+drawn at random per crop.
 
-Der Preis dieser Annahme: ein Ortho zeigt jeden Baum von genau oben, ein echtes
-Foto zeigt Kronenflanken zum Bildrand hin. Für die Frage *wie hoch ist dieser
-Baum* spielt das kaum eine Rolle, für die Frage *wo genau ist seine Kante* etwas
-mehr. Wer es genau nehmen will, schaltet mit `--strahl-tiefe` auf die Tiefe
-entlang des Sehstrahls statt entlang der optischen Achse.
+The price of that assumption: an ortho shows every tree from exactly above, a
+real photograph shows crown flanks towards the image edge. For the question *how
+tall is this tree* that hardly matters, for the question *where exactly is its
+edge* somewhat more. If you want to be strict, `--strahl-tiefe` switches to
+depth along the viewing ray instead of along the optical axis.
 
-## Der Raum, in dem trainiert wird
+## The space in which training happens
 
-Depth Pro gibt keine Meter aus, sondern **kanonische inverse Tiefe**. Metrisch
-wird daraus erst im Nachlauf des Prozessors
+Depth Pro does not output metres but **canonical inverse depth**. It only
+becomes metric in the processor's post-processing
 ([`image_processing_depth_pro.py:108`](https://github.com/huggingface/transformers/blob/main/src/transformers/models/depth_pro/image_processing_depth_pro.py)):
 
 ```
-d = (f_px / Bildbreite) / D_roh  =  k / D_roh
+d = (f_px / image width) / D_raw  =  k / D_raw
 ```
 
-`k` hängt allein am Bildwinkel und nicht an der Auflösung. Das hat drei Folgen,
-die den ganzen Aufbau bestimmen:
+`k` depends solely on the field of view and not on resolution. That has three
+consequences, and they determine the whole setup:
 
-1. **`k` wird vorgegeben, nicht geschätzt.** Depth Pro hat einen Bildwinkelkopf,
-   der `k` mitschätzt. Bei bekannter Drohnenkamera ist das die schlechtere Wahl —
-   der Kopf ist auf Bodenperspektiven trainiert, und ein Fehler in `k` geht
-   *linear* in jede Tiefe ein. Der Kopf bleibt eingefroren und im Checkpoint
-   erhalten, benutzt wird er nicht.
-2. **Die Ausgabe bleibt kanonische inverse Tiefe.** Trainiert wird über die
-   daraus berechnete metrische Höhe `h = H - k/D`. Der Checkpoint bleibt mit
-   den normalen Hugging-Face-Klassen ladbar. Weil der eingefrorene
-   Bildwinkelkopf bei Nadirbildern unzuverlässig ist, muss `k` bei der
-   metrischen Nachrechnung weiterhin vorgegeben werden.
-3. **Die Auflösung der Ausschnitte ist frei.** Sie stehen auf 1536 px Breite,
-   damit zwischen Ausschnitt und Modelleingang gar nicht erst umskaliert wird.
+1. **`k` is supplied, not estimated.** Depth Pro has a field-of-view head that
+   estimates `k` as well. With a known drone camera that is the worse choice —
+   the head is trained on ground perspectives, and an error in `k` enters every
+   depth *linearly*. The head stays frozen and is preserved in the checkpoint,
+   but it is not used.
+2. **The output stays canonical inverse depth.** Training runs over the metric
+   height computed from it, `h = H - k/D`. The checkpoint remains loadable with
+   the normal Hugging Face classes. Because the frozen field-of-view head is
+   unreliable on nadir images, `k` still has to be supplied when converting to
+   metres.
+3. **The resolution of the crops is free.** They are set to 1536 px width, so
+   that no rescaling happens between crop and model input at all.
 
-### Der Zuschnitt ist 16:9, nicht quadratisch
+### The crop is 16:9, not square
 
-Depth Pro quetscht jedes Bild auf 1536×1536, ohne Rücksicht auf das
-Seitenverhältnis. Unsere Frames sind 1920×1080, werden in dieser Kette also um
-Faktor 1,78 in der Höhe gestaucht. Wer auf Quadraten trainiert und auf
-gestauchten Bildern anwendet, hat sich den Fehler selbst gebaut. Die Ausschnitte
-kommen deshalb im Seitenverhältnis der Zielframes (`--seitenverhaeltnis`,
-Vorgabe 16/9) und laufen anschließend durch dieselbe Stauchung.
+Depth Pro squeezes every image to 1536×1536, regardless of aspect ratio. Our
+frames are 1920×1080 and are therefore compressed by a factor of 1.78 in height
+along this chain. Whoever trains on squares and applies to squeezed images has
+built the error themselves. The crops therefore come in the aspect ratio of the
+target frames (`--seitenverhaeltnis`, default 16/9) and then go through the same
+squeeze.
 
-Aus demselben Grund gibt es als Augmentierung nur Spiegelungen und keine
-Vierteldrehung — die würde das Seitenverhältnis kippen.
+For the same reason the only augmentation is mirroring and not quarter-turns —
+those would flip the aspect ratio.
 
-Der Verlust hat zwei Teile:
+The loss has two parts:
 
-| Teil | Wirkung |
+| Part | Effect |
 |---|---|
-| Huber auf der metrischen Höhe | optimiert direkt den Höhenfehler in Metern und ist gegen einzelne nDSM-Ausreißer robust. |
-| Gradientenanpassung über 4 Skalen | macht Kronengrenzen scharf. Ein reiner Pixelverlust belohnt weichere Übergänge. |
+| Huber on the metric height | optimises the height error in metres directly and is robust against individual nDSM outliers. |
+| Gradient matching over 4 scales | keeps crown boundaries sharp. A pure per-pixel loss rewards softer transitions. |
 
-### Der Kopf wird vorgespannt, bevor trainiert wird
+### The head is pre-scaled before training
 
-Pures Depth Pro liegt in diesem Aufnahmefall um etwa Faktor 50 daneben. Wegen
-`d = k/D` ist die Abbildung nahe null sehr steil. Die Vorspannung setzt die
-Ausgabe vor dem ersten Optimizer-Schritt in den physikalisch relevanten Bereich
-und vermeidet damit einen unnötig instabilen Skalenwechsel.
+Pure Depth Pro is off by roughly a factor of 50 in this capture situation.
+Because of `d = k/D` the mapping is very steep near zero. The pre-scaling puts
+the output into the physically relevant range before the first optimizer step
+and thereby avoids an unnecessarily unstable change of scale.
 
-Der Ausweg ist, den Sprung gar nicht erst zu verlangen. `--vorspannen auto`
-misst den Skalenfehler auf ein paar Stapeln und skaliert damit die letzte
-Faltung des Kopfes. Weil sie eine 1×1-Faltung vor der abschließenden ReLU ist
-und der Faktor positiv, ist das **exakt** äquivalent zu `D → faktor · D` — aber
-als echte Gewichtsänderung, nicht als Sonderweg beim Anwenden. Der ausgelieferte
-Checkpoint bleibt dadurch ohne Beipackzettel brauchbar.
+The way out is not to demand the jump in the first place. `--vorspannen auto`
+measures the scale error over a few batches and scales the last convolution of
+the head with it. Because that is a 1×1 convolution before the final ReLU and
+the factor is positive, this is **exactly** equivalent to `D → factor · D` — but
+as a real weight change, not as a special case at inference time. The shipped
+checkpoint therefore stays usable without an instruction leaflet.
 
-Die Lernrate dieser einen Schicht wird mit demselben Faktor skaliert. Sonst
-rissen Adam-Schritte in gewohnter Größe die nun um Größenordnungen kleineren
-Gewichte sofort auseinander — Adam normiert die Schrittweite weg, sie hängt
-allein an der Lernrate.
+The learning rate of that one layer is scaled by the same factor. Otherwise Adam
+steps of the usual size would immediately tear apart weights that are now orders
+of magnitude smaller — Adam normalises the step size away, so it depends solely
+on the learning rate.
 
-Der metrische Fehler wird vorwärts exakt ausgewertet. Für den Rückwärtslauf
-wird der Jacobian von `k/D` am jeweiligen Zielwert linearisiert. So bleibt die
-Optimierungsrichtung am Ziel exakt, kann nahe `D=0` aber nicht mehr singulär
-werden. Zusätzlich laufen Trainingssamples in kurzen, gemischten Gebietsblöcken
-statt 200 Ausschnitte desselben Bestands unmittelbar hintereinander.
+The metric error is evaluated exactly in the forward pass. For the backward
+pass, the Jacobian of `k/D` is linearised at the respective target value. The
+optimisation direction thus stays exact at the target, but can no longer become
+singular near `D=0`. In addition, training samples run in short, mixed site
+blocks instead of 200 crops of the same stand back to back.
 
-Trainiert wird standardmäßig `--trainable decoder`: Nacken, Fusionsstufe und
-Kopf, rund 60 M Parameter. Der Encoder läuft eingefroren unter `no_grad` — das
-spart den Großteil des Speichers und reicht, denn der Maßstab sitzt im Kopf,
-nicht in den Merkmalen. `--trainable all` stimmt alles mit ab und braucht
-deutlich mehr GPU.
+The default is `--trainable decoder`: neck, fusion stage and head, around 60 M
+parameters. The encoder runs frozen under `no_grad` — that saves the bulk of the
+memory and is sufficient, because the scale sits in the head, not in the
+features. `--trainable all` tunes everything and needs considerably more GPU.
 
-## Reihenfolge
+## Order of operations
 
 ```bash
-sbatch depthft/sbatch/run_prepare.sbatch        # 47 Orthos -> Bodenraster, ~1 h
-sbatch depthft/sbatch/run_check.sbatch          # PFLICHT, siehe unten
-sbatch depthft/sbatch/run_finetune.sbatch       # Feinabstimmung
-sbatch depthft/sbatch/run_evaluate.sbatch       # metrisch, auf Testgebieten
-sbatch depthft/sbatch/run_apply_frames.sbatch   # auf unseren eigenen Frames
-sbatch depthft/sbatch/run_export.sbatch         # Versandpaket für Kollegen
+sbatch depthft/sbatch/run_prepare.sbatch        # 47 orthos -> ground raster, ~1 h
+sbatch depthft/sbatch/run_check.sbatch          # MANDATORY, see below
+sbatch depthft/sbatch/run_finetune.sbatch       # fine-tuning
+sbatch depthft/sbatch/run_evaluate.sbatch       # metric, on the test sites
+sbatch depthft/sbatch/run_apply_frames.sbatch   # on our own frames
+sbatch depthft/sbatch/run_export.sbatch         # shippable package for colleagues
 ```
 
-Alle Skripte nehmen Vorgaben über Umgebungsvariablen, z. B.
+All scripts take their settings from environment variables, e.g.
 
 ```bash
 EPOCHS=12 TRAINABLE=all BATCH=1 ACCUM=16 sbatch depthft/sbatch/run_finetune.sbatch
@@ -143,198 +141,196 @@ SITES="CFB014 CFB019" sbatch depthft/sbatch/run_prepare.sbatch
 ALTITUDES="pines=35 dense=60 urban=50" sbatch depthft/sbatch/run_apply_frames.sbatch
 ```
 
-### Zwei Eigenheiten der FORTRESS-Höhenmodelle
+### Two peculiarities of the FORTRESS height models
 
-Beide fielen erst im Prüflauf auf, und beide hätten das Training still verdorben.
+Both only surfaced in the check run, and both would have silently spoiled the
+training.
 
-**Exakte Nullen sind Füllung, nicht Gelände.** In den nDSM-Dateien ist `0.00` der
-mit Abstand häufigste Einzelwert — 9 bis 27 % der Fläche, in großen
-zusammenhängenden Blöcken, unter denen im Orthomosaik geschlossener Wald steht.
-Echter Boden streut um null herum, er trifft ihn nicht zehntausendfach exakt.
-Diese Flächen als Boden zu lernen hieße: Kronen auf Höhe null. `prepare.py`
-verwirft sie deshalb (`--nullen-behalten` schaltet es zum Vergleichen ab). Über
-alle 47 Gebiete: Füllung im Median 6 %, im schlimmsten Gebiet 43 %; der gültige
-Anteil liegt danach zwischen 51 % und 97 %, im Median bei 82 % (steht je Gebiet
-in `index.json`).
+**Exact zeros are fill, not ground.** In the nDSM files `0.00` is by far the most
+frequent single value — 9 to 27 % of the area, in large contiguous blocks under
+which the orthomosaic shows closed forest. Real ground scatters around zero, it
+does not hit it exactly ten thousand times. Learning those areas as ground would
+mean: crowns at height zero. `prepare.py` therefore discards them
+(`--nullen-behalten` turns that off for comparison). Across all 47 sites: fill
+6 % at the median, 43 % in the worst site; the valid share afterwards lies
+between 51 % and 97 %, at the median 82 % (recorded per site in `index.json`).
 
-Die verworfenen Flächen liegen bevorzugt in Kronenlücken und Schatten — dort, wo
-die Photogrammetrie keine Höhe rekonstruieren konnte. Das heißt: **niedrige
-Höhen sind im Training leicht unterrepräsentiert**, gerade der Bodenbezug. Bei
-Gebieten mit 0 % Füllung — das ist die Mehrheit — bleibt die Verteilung
-vollständig, deshalb ist es tragbar. Beim Auswerten des Bodenniveaus lohnt der
-Blick trotzdem.
+The discarded areas sit preferentially in canopy gaps and shadows — where
+photogrammetry could not reconstruct a height. That means **low heights are
+slightly under-represented in training**, particularly the ground reference. For
+sites with 0 % fill — the majority — the distribution stays complete, which is
+why it is acceptable. When evaluating the ground level it is still worth a look.
 
-**Die Kamera muss über den Wipfeln hängen.** Ohne Schranke entstünden
-Ausschnitte, in denen 30-m-Bäume bei 27 m Flughöhe fast bis zur Linse reichen —
-ein Aufnahmefall, den es bei uns nicht gibt. `--abstand-min` (Vorgabe 20 m)
-setzt die Flughöhe je Gebiet auf mindestens *höchster Wipfel + 20 m*.
+**The camera has to hang above the treetops.** Without a bound there would be
+crops in which 30 m trees almost reach the lens at 27 m flight altitude — a
+capture situation that does not occur for us. `--abstand-min` (default 20 m)
+sets the flight altitude per site to at least *highest treetop + 20 m*.
 
-### Was pures Depth Pro hier leistet — die Messlatte
+### What pure Depth Pro achieves here — the bar
 
-Aus dem Prüflauf über zehn Ausschnitte bei 73,7° Bildwinkel:
+From the check run over ten crops at 73.7° field of view:
 
-| | Wahrheit | pures Depth Pro |
+| | Truth | Pure Depth Pro |
 |---|---|---|
-| Tiefe bei 27 m Flughöhe | 3,4–27,5 m | 1,0–1,9 m |
-| Tiefe bei 64 m Flughöhe | 22,7–64,0 m | 1,1–1,6 m |
-| Skalenfaktor | 1,00 | **0,06** |
-| AbsRel | — | **0,94** |
-| Bildwinkel (Kopf) | 73,7° | 18–41° |
+| Depth at 27 m altitude | 3.4–27.5 m | 1.0–1.9 m |
+| Depth at 64 m altitude | 22.7–64.0 m | 1.1–1.6 m |
+| Scale factor | 1.00 | **0.06** |
+| AbsRel | — | **0.94** |
+| Field of view (head) | 73.7° | 18–41° |
 
-Depth Pro kollabiert bei Nadir-Waldbildern auf rund einen Meter Tiefe, und zwar
-unabhängig von der Flughöhe. Zu kleine Tiefe heißt: alles sitzt zu nah an der
-Kamera, die Bäume erscheinen zu hoch — genau das beobachtete Symptom.
+On nadir forest images Depth Pro collapses to roughly one metre of depth,
+independently of the flight altitude. Too little depth means: everything sits
+too close to the camera, the trees appear too tall — exactly the symptom
+observed.
 
-Auffällig ist die zweite Zeile: die vorhergesagte **Spanne** innerhalb eines
-Bildes beträgt gut einen halben Meter, wo in Wirklichkeit 40 m liegen. Daraus
-ließe sich schließen, dass nicht nur der Maßstab falsch ist, sondern auch der
-Kontrast — und ein globaler Skalenfaktor deshalb nicht helfen kann.
+The second row is striking: the predicted **range** within one image is a good
+half metre where in reality there are 40 m. One might conclude from that that
+not only the scale is wrong but also the contrast — and that a global scale
+factor therefore cannot help.
 
-**Dieser Schluss ist falsch, und die Auswertung weist ihn nach.** Global auf den
-richtigen Median skaliert, erreicht pures Depth Pro AbsRel 0,074 und schlägt
-damit das feinabgestimmte Modell. Die relative Struktur ist ausgezeichnet; die
-kleine absolute Spanne ist nur die Folge des Skalenfehlers, kein eigener Mangel.
-Was fehlt, ist ausschließlich der Maßstab.
+**That conclusion is wrong, and the evaluation proves it.** Scaled globally to
+the correct median, pure Depth Pro reaches AbsRel 0.074 and thereby beats the
+fine-tuned model. The relative structure is excellent; the small absolute range
+is merely a consequence of the scale error, not a defect of its own. What is
+missing is the scale, and only the scale.
 
-Nur: den richtigen Faktor kennt man im Einsatz nicht. Siehe unten.
+Except: in deployment you do not know the right factor. See below.
 
-### `run_check.sbatch` ist nicht optional
+### `run_check.sbatch` is not optional
 
-Der teuerste Fehler in dieser Kette wäre ein Versatz zwischen Orthomosaik und
-Höhenmodell: die Georeferenzierung stimmt nicht, die Kronen im nDSM sitzen zwei
-Meter neben denen im Bild, und das Training lernt geduldig Unsinn — 48 Stunden
-lang, mit sinkendem Verlust. `check.py` legt beides nebeneinander und prüft die
-Geometrie gegen die Formeln oben. **Die Vergleichsstreifen unter
-`results_depthft/check/` müssen angesehen werden**, bevor das Training startet:
-das Relief des nDSM muss auf den Kronen im Bild liegen.
+The most expensive error in this chain would be an offset between orthomosaic
+and height model: the georeferencing is off, the crowns in the nDSM sit two
+metres beside those in the image, and the training patiently learns nonsense —
+for 48 hours, with a falling loss. `check.py` puts both side by side and checks
+the geometry against the formulas above. **The comparison strips under
+`results_depthft/check/` have to be looked at** before the training starts: the
+relief of the nDSM must lie on the crowns in the image.
 
-Nebenbei liefert `check.py` die Ausgangslage (Tabelle oben) und weist je
-Ausschnitt aus, wie viel Fläche überhaupt Wahrheit trägt. Im Vergleichsstreifen
-ist fehlende Wahrheit schwarz — sie darf nicht als Boden durchgehen.
+Along the way `check.py` supplies the starting position (table above) and
+reports per crop how much of the area carries truth at all. In the comparison
+strip, missing truth is black — it must not pass as ground.
 
-## Was gemessen wird
+## What is measured
 
-`evaluate.py` vergleicht auf Gebieten, die im Training nie vorkamen, vier
-Varianten. Die dritte ist die aufschlussreichste:
+`evaluate.py` compares four variants on sites that never occurred in training.
+The third is the most revealing:
 
-| Variante | Was sie beantwortet |
+| Variant | What it answers |
 |---|---|
-| `pur_fovkopf` | Depth Pro so, wie man es von der Stange nimmt. |
-| `pur_kamera` | Derselbe Lauf, `k` vorgegeben. Trennt Fehler im Bildwinkel von Fehlern in der Tiefe. |
-| `pur_skalenangleich` | Global so skaliert, dass der Median exakt stimmt. **Kein anwendbares Verfahren, sondern ein Orakel** — der Faktor kommt aus der Wahrheit. Misst, wie gut die *relative* Struktur ist. |
-| `*_hoehenanker` | Skaliert, bis die tiefste Stelle im Bild der bekannten Flughöhe entspricht. Anwendbar, denn eine Drohne kennt ihre Höhe. |
-| `feinabgestimmt_kamera` | Das Ergebnis: die Skala kommt aus dem Bild selbst. |
+| `pur_fovkopf` | Depth Pro exactly as you take it off the shelf. |
+| `pur_kamera` | The same run with `k` supplied. Separates field-of-view errors from depth errors. |
+| `pur_skalenangleich` | Scaled globally so that the median is exactly right. **Not an applicable method but an oracle** — the factor comes from the truth. Measures how good the *relative* structure is. |
+| `*_hoehenanker` | Scaled until the deepest point in the image matches the known flight altitude. Applicable, because a drone knows its altitude. |
+| `feinabgestimmt_kamera` | The result: the scale comes from the image itself. |
 
-### Gemessen, 200 Ausschnitte aus fünf Testgebieten
+### Measured, 200 crops from five test sites
 
-| Variante | AbsRel | MAE | δ<1,25 | Skalenfehler |
+| Variant | AbsRel | MAE | δ<1.25 | Scale error |
 |---|---|---|---|---|
-| `pur_skalenangleich` *(Orakel)* | 0,074 | 4,41 m | 0,941 | 1,000 |
-| **`feinabgestimmt_kamera`** | **0,120** | **7,36 m** | **0,843** | 0,945 |
-| `feinabgestimmt_hoehenanker` | 0,167 | 8,96 m | 0,797 | 1,170 |
-| `pur_hoehenanker` | 0,226 | 11,98 m | 0,632 | 1,231 |
-| `pur_fovkopf` | 0,939 | 56,11 m | 0,000 | 0,061 |
-| `pur_kamera` | 0,976 | 58,14 m | 0,000 | 0,024 |
+| `pur_skalenangleich` *(oracle)* | 0.074 | 4.41 m | 0.941 | 1.000 |
+| **`feinabgestimmt_kamera`** | **0.120** | **7.36 m** | **0.843** | 0.945 |
+| `feinabgestimmt_hoehenanker` | 0.167 | 8.96 m | 0.797 | 1.170 |
+| `pur_hoehenanker` | 0.226 | 11.98 m | 0.632 | 1.231 |
+| `pur_fovkopf` | 0.939 | 56.11 m | 0.000 | 0.061 |
+| `pur_kamera` | 0.976 | 58.14 m | 0.000 | 0.024 |
 
-Drei Dinge stehen darin.
+Three things are in there.
 
-**Das Feintuning wirkt.** Von AbsRel 0,98 auf 0,120, von δ<1,25 = 0,000 auf 0,843.
-Der Skalenfehler geht von 0,024 auf 0,945 — im Median noch 5,5 % daneben.
+**The fine-tuning works.** From AbsRel 0.98 to 0.120, from δ<1.25 = 0.000 to
+0.843. The scale error goes from 0.024 to 0.945 — still 5.5 % off at the median.
 
-**Die Struktur war nie das Problem.** Mit geschenktem Skalenfaktor erreicht das
-pure Modell 0,074. Das Feintuning kommt ohne jede Hilfe auf 0,120 und damit nahe
-an diese Schranke heran, aber es überholt sie nicht.
+**The structure was never the problem.** Given the scale factor for free, the
+pure model reaches 0.074. The fine-tuning reaches 0.120 without any help and
+thereby comes close to that bound, but it does not overtake it.
 
-**Der naheliegende Anker funktioniert nicht.** Eine Drohne kennt ihre Flughöhe —
-es liegt nahe, damit zu skalieren statt ein Modell zu trainieren. Gemessen ist
-das *schlechter* (0,226 gegenüber 0,976 für pur, aber auch schlechter als
-0,120), und der Grund steht im Skalenfehler von 1,23: **im geschlossenen
-Kronendach ist die tiefste sichtbare Stelle nicht der Boden.** Selbst beim
-feinabgestimmten Modell verschlechtert der Anker das Ergebnis (0,167 statt
-0,120) — die gelernte Skala ist verlässlicher als die geometrische Annahme.
+**The obvious anchor does not work.** A drone knows its flight altitude — it is
+tempting to scale with that instead of training a model. Measured, that is
+*worse* (0.226 against 0.976 for pure, but also worse than 0.120), and the
+reason is in the scale error of 1.23: **in a closed canopy the deepest visible
+point is not the ground.** Even for the fine-tuned model the anchor makes the
+result worse (0.167 instead of 0.120) — the learned scale is more reliable than
+the geometric assumption.
 
-Die Bildschärfe spielt kaum eine Rolle: mit `--videolook` (Weichzeichnung,
-Rauschen, JPEG) ergibt sich 0,135 statt 0,120. Das Modell überträgt sich also
-auf Videobildqualität.
+Image sharpness hardly matters: with `--videolook` (blur, noise, JPEG) the
+result is 0.135 instead of 0.120. So the model transfers to video image quality.
 
-`mae_m` ist zugleich der Fehler der **Höhe über Boden**: die ist Flughöhe minus
-Tiefe, und die Flughöhe kürzt sich in der Differenz heraus.
+`mae_m` is at the same time the error of the **height above ground**: that is
+flight altitude minus depth, and the altitude cancels out in the difference.
 
-## Messen ohne Wahrheit — auf unseren eigenen Frames
+## Measuring without truth — on our own frames
 
-Für `/cold/Mahfuz/chosen_frames` gibt es kein nDSM. Trotzdem lässt sich messen,
-und zwar an etwas, das gar keine Höhenkarte braucht: **die Tiefe zum Boden ist
-die Flughöhe.**
+For `/cold/Mahfuz/chosen_frames` there is no nDSM. It can still be measured, and
+on something that needs no height map at all: **the depth to the ground is the
+flight altitude.**
 
 ```
-Flughöhe geschätzt = 95. Perzentil der Tiefe
-Kronenhöhe         = 95. Perzentil - 2. Perzentil der Tiefe
+estimated altitude = 95th percentile of the depth
+crown height       = 95th percentile - 2nd percentile of the depth
 ```
 
-Die zweite Zahl ist die wichtigere, weil sie ohne jede Annahme auskommt: die
-Spanne zwischen Boden und Wipfel ist die Baumhöhe, ganz gleich wie hoch die
-Drohne wirklich hing. Ein Modell, das den Bestand auf 6 m zusammendrückt, fällt
-hier sofort auf — auch dann, wenn seine Tiefenkarte hübsch aussieht.
+The second number is the more important one, because it needs no assumption at
+all: the span between ground and treetop is the tree height, no matter how high
+the drone actually hung. A model that compresses the stand to 6 m is caught
+immediately here — even when its depth map looks pretty.
 
-Ist die Flughöhe bekannt (Zahl im Ordnernamen wie `80m`, oder über
-`--altitudes`), kommen zwei Prüfungen dazu: das Bodenniveau muss bei 0 m liegen,
-und kein Bildpunkt darf unter dem Boden sitzen.
+If the flight altitude is known (a number in the folder name such as `80m`, or
+via `--altitudes`), two more checks are added: the ground level has to be at
+0 m, and no pixel may sit below the ground.
 
-> **Offene Stelle: 100 m sind eine kleine Extrapolation.** Die Gebiete sind
-> 130 m breit. Bei 73,7° Bildwinkel deckt eine Aufnahme aus 80 m genau 120 m ab —
-> gerade noch drin. Aus 100 m wären es 150 m, mehr als das Gebiet hergibt. Im
-> Training endet die Bodenbreite deshalb bei rund 127 m, also bei einer
-> effektiven Auflösung von 8,3 cm auf dem 1536er Eingang, während unsere
-> 100-m-Frames 9,8 cm brauchen. Faktor 1,18 darüber hinaus — vertretbar, aber
-> beim Auswerten des Ordners `100` im Blick zu behalten. Der Fall 80 m ist voll
-> abgedeckt.
+> **Open point: 100 m is a small extrapolation.** The sites are 130 m wide. At
+> 73.7° field of view a shot from 80 m covers exactly 120 m — just about inside.
+> From 100 m it would be 150 m, more than the site provides. In training the
+> ground width therefore ends at around 127 m, i.e. at an effective resolution of
+> 8.3 cm on the 1536 input, while our 100 m frames need 9.8 cm. A factor of 1.18
+> beyond it — defensible, but worth keeping in mind when evaluating the folder
+> `100`. The 80 m case is fully covered.
 
-> **`urban` enthält Screenshots, keine Drohnenframes** — vier Bildschirmfotos in
-> wechselnden Auflösungen. Der vorgegebene Bildwinkel gilt dort nicht, alle
-> Werte sind um einen unbekannten Faktor falsch. `karten_export.py` und
-> `punktwolke.py` warnen bei Bildern, die nicht 1920×1080 sind.
+> **`urban` contains screenshots, not drone frames** — four screen captures at
+> varying resolutions. The prescribed field of view does not hold there, and all
+> values are wrong by an unknown factor. `karten_export.py` and `punktwolke.py`
+> warn on images that are not 1920×1080.
 
-> **Offene Stelle.** Der Bildwinkel 73,7° ist ein Schätzwert im Code, keine
-> gemessene Kameraangabe (siehe `BERICHT_hoehe_aus_bildern.md`). Er geht linear
-> in jede Tiefe ein. Liegen EXIF-Daten vor, gehört der Wert dorther —
-> `--hfov-deg` nimmt ihn entgegen. Ebenso sind die Flughöhen der Ordner ohne
-> Zahl im Namen (`dense`, `mixed`, `pines`, `urban`) unbekannt und fallen auf
-> 100 m zurück; das verfälscht dort das Bodenniveau, **nicht** aber die
-> Kronenhöhe.
+> **Open point.** The field of view of 73.7° is an estimate in the code, not a
+> measured camera specification (see `REPORT_height_from_images.md`). It enters
+> every depth linearly. If EXIF data is available, the value should come from
+> there — `--hfov-deg` accepts it. Likewise the flight altitudes of the folders
+> without a number in the name (`dense`, `mixed`, `pines`, `urban`) are unknown
+> and fall back to 100 m; that distorts the ground level there, but **not** the
+> crown height.
 
-## Das Versandpaket
+## The shipping package
 
-`export.py` baut einen Ordner, den jemand ohne dieses Repository benutzen kann:
-Gewichte im Hugging-Face-Format, passender Bildprozessor, das schlanke
-`inferenz.py`, ein `beispiel.py` und eine Modellkarte, in der die eine Sache
-steht, an der sonst alles scheitert — dass der Bildwinkel vorgegeben und nicht
-geschätzt gehört. Mit `--tar` liegt ein `tar.gz` daneben.
+`export.py` builds a folder that someone without this repository can use:
+weights in Hugging Face format, the matching image processor, the lean
+`inferenz.py`, an `beispiel.py` and a model card stating the one thing that
+everything else depends on — that the field of view belongs supplied, not
+estimated. With `--tar` a `tar.gz` is placed next to it.
 
 ```bash
 sbatch depthft/sbatch/run_export.sbatch
 # -> /scratch/shared/$USER/runs/depthft/versand/depthpro-fortress-nadir[.tar.gz]
 ```
 
-## Dateien
+## Files
 
-| Datei | Aufgabe |
+| File | Task |
 |---|---|
-| `prepare.py` | 47 Orthos + nDSM → gemeinsames Bodenraster bei 2 cm/px, ~1,2 GB. Der teure Teil, einmalig. |
-| `dataset.py` | schneidet daraus virtuelle Nadirframes; Geometrie und Augmentierung. |
-| `check.py` | Wahrheit gegen Bild, Geometrie gegen Formel, Ausgangslage des puren Modells. |
-| `finetune.py` | die Feinabstimmung. |
-| `inferenz.py` | Anwenden mit vorgegebener Kamera. Ohne Projektabhängigkeiten, wird mitgeliefert. |
-| `evaluate.py` | pur gegen feinabgestimmt, metrisch, auf Testgebieten. |
-| `apply_frames.py` | pur gegen feinabgestimmt auf unseren eigenen Frames. |
-| `export.py` | Versandpaket. |
-| `karten_export.py` | Tiefen- und Höhenkarten als npy/png/jpg zum Weiterverarbeiten. |
-| `punktwolke.py` | 3D-Wolken als `.ply` und `.las`, am Boden verankert statt an der Kamera. |
-| `kalibrieren.py` | Bildwinkel rückwärts aus Frames mit bekannter Flughöhe. |
-| `vergleichsbild.py` | Abbildungen pur gegen feinabgestimmt, lesbar statt gesättigt. |
-| `bilder.py` | Farbskala, Reliefschattierung, Beschriftung, Balkendiagramm. |
+| `prepare.py` | 47 orthos + nDSM → common ground raster at 2 cm/px, ~1.2 GB. The expensive part, once. |
+| `dataset.py` | cuts virtual nadir frames from it; geometry and augmentation. |
+| `check.py` | truth against image, geometry against formula, starting position of the pure model. |
+| `finetune.py` | the fine-tuning. |
+| `inferenz.py` | inference with a supplied camera. No project dependencies, ships with the package. |
+| `evaluate.py` | pure vs. fine-tuned, metric, on the test sites. |
+| `apply_frames.py` | pure vs. fine-tuned on our own frames. |
+| `export.py` | shipping package. |
+| `karten_export.py` | depth and height maps as npy/png/jpg for further processing. |
+| `punktwolke.py` | 3D clouds as `.ply` and `.las`, anchored to the ground rather than the camera. |
+| `kalibrieren.py` | field of view back-calculated from frames with known flight altitude. |
+| `vergleichsbild.py` | figures pure vs. fine-tuned, readable instead of saturated. |
+| `bilder.py` | colour scale, hillshading, labelling, bar chart. |
 
-## Herkunft der Daten
+## Provenance of the data
 
-FORTRESS: Schiefer, F., Frey, J. & Kattenborn, T. (2022), CC BY 4.0. Wer
-Ergebnisse dieses Modells veröffentlicht, sollte den Datensatz zitieren — auch
-der Kollege, der die Gewichte bekommt. Steht so in der Modellkarte.
+FORTRESS: Schiefer, F., Frey, J. & Kattenborn, T. (2022), CC BY 4.0. Anyone
+publishing results from this model should cite the dataset — including the
+colleague who receives the weights. It says so in the model card.
