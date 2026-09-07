@@ -1,16 +1,15 @@
-"""Kroneninstanzen mit Mask R-CNN auf BAMFORESTS.
+"""Crown instances with Mask R-CNN on BAMFORESTS.
 
-Warum diese Bauform und nicht der Kopf aus `crownnet.py`: dort entstehen die
-Instanzen erst nachtraeglich per Watershed aus drei Karten, das Netz sagt also
-nie eine Instanz vorher, sondern nur, wo ein Inneres endet. Bei ineinander
-gewachsenen Kronen ist genau das der Punkt, an dem es kippt -- die gemessenen
-F1-Werte lagen bei 0.04 bis 0.12 (IoU 0.5). Mask R-CNN sagt jede Krone einzeln
-vorher, samt Konfidenz, und darf sich ueberlappen. Kronen ueberlappen sich
-tatsaechlich, ein Labelbild kann das nicht abbilden.
+Why this design and not the head from `crownnet.py`: there the instances only
+arise afterwards by watershed from three maps, so the network never predicts an
+instance, only where an interior ends. With interlocking crowns that is exactly
+where it breaks down -- the measured F1 values were 0.04 to 0.12 (IoU 0.5). Mask
+R-CNN predicts every crown individually, with a confidence, and instances may
+overlap. Crowns do overlap in reality, and a label image cannot represent that.
 
-Der Maskenkopf loest mit 56x56 auf (`--mask-pool 28` statt der ueblichen 14),
-weil die Kronen mit im Mittel 258 px Kantenlaenge deutlich groesser sind als
-COCO-Objekte; mit 28x28 waere jeder Maskenpixel 9 Bildpixel breit.
+The mask head resolves at 56x56 (`--mask-pool 28` instead of the usual 14),
+because at a mean edge length of 258 px the crowns are considerably larger than
+COCO objects; at 28x28 every mask pixel would be 9 image pixels wide.
 
     python crownseg/maskrcnn.py --mode train
     python crownseg/maskrcnn.py --mode eval  --splits test1 test2
@@ -38,26 +37,26 @@ from tiling import draw_overlay, slide, to_label_map  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINTS = Path(f"/scratch/shared/{os.environ.get('USER', 'nik')}/data/treeclf/checkpoints")
 
-# Bodenaufloesung von BAMFORESTS. Bestimmt, um welchen Faktor fremde Aufnahmen
-# skaliert werden muessen, damit die Kronen in der gelernten Groesse ankommen.
+# Ground sampling of BAMFORESTS. Determines the factor by which foreign imagery
+# has to be scaled so that the crowns arrive at the size that was learned.
 BAM_GSD_CM = 1.70
 
 
 # --------------------------------------------------------------------------- #
-# Modell
+# Model
 # --------------------------------------------------------------------------- #
 
 
 def build_model(mask_pool: int, detections: int, anchor_scale: float = 2.0, pretrained: bool = True):
-    """Mask R-CNN, an die Groessenverteilung der Kronen angepasst.
+    """Mask R-CNN, adapted to the size distribution of the crowns.
 
-    Die Standardanker decken 32 bis 512 px ab -- gedacht fuer COCO-Objekte. Die
-    Kronen hier liegen bei Median 281 px (Stadtwald) bis 392 px (Hain), das p95
-    reicht bis 842 px. Alles ueber 512 px kann die RPN mit den Standardankern
-    nicht vorschlagen, egal wie lange trainiert wird; genau diese Baeume wurden
-    in Hain stattdessen in Stuecke zerlegt. `anchor_scale` verschiebt die Leiter
-    auf 64 bis 1024 px. Die Ankergroessen sind keine gelernten Gewichte, die
-    Zahl der Anker je Ort bleibt drei -- der Kopf passt unveraendert.
+    The default anchors cover 32 to 512 px -- meant for COCO objects. The crowns
+    here have a median of 281 px (Stadtwald) to 392 px (Hain), and the p95 reaches
+    842 px. With the default anchors the RPN cannot propose anything above 512 px,
+    no matter how long you train; those very trees were broken into pieces in
+    Hain instead. `anchor_scale` shifts the ladder to 64 to 1024 px. Anchor sizes
+    are not learned weights and the number of anchors per location stays three --
+    the head fits unchanged.
     """
     from torchvision.models.detection import maskrcnn_resnet50_fpn_v2
     from torchvision.models.detection.anchor_utils import AnchorGenerator
@@ -83,18 +82,18 @@ def build_model(mask_pool: int, detections: int, anchor_scale: float = 2.0, pret
 
 
 def fix_input_size(model, size: int) -> None:
-    """Kein Umskalieren im Modell -- der Massstab wird ausserhalb gesetzt."""
+    """No rescaling inside the model -- the scale is set outside."""
     model.transform.min_size = (size,)
     model.transform.max_size = size
 
 
 # --------------------------------------------------------------------------- #
-# Vorhersage
+# Prediction
 # --------------------------------------------------------------------------- #
 
 
 def predict_tiles(model, image_rgb: np.ndarray, device, args) -> list[met.Instance]:
-    """Gemeinsame Fensterlogik aus tiling.py mit dem Mask-R-CNN-Fensterschritt."""
+    """The shared window logic from tiling.py with the Mask R-CNN window step."""
     return slide(image_rgb, args.eval_tile, args.overlap,
                  lambda window: predict_window(model, window, device, args.score_thresh))
 
@@ -112,17 +111,17 @@ def predict_window(model, image_rgb: np.ndarray, device, score_thresh: float) ->
 
 
 # --------------------------------------------------------------------------- #
-# Modi
+# Modes
 # --------------------------------------------------------------------------- #
 
 
 def validate_instances(model, args, device) -> float:
-    """Instanz-F1 auf ein paar ganzen Validierungskacheln.
+    """Instance F1 on a few whole validation tiles.
 
-    Der Validierungsverlust taugt bei Mask R-CNN nicht zur Modellauswahl -- er
-    steigt regelmaessig weiter, waehrend die Genauigkeit noch zunimmt, weil er
-    ueber RPN-Stichproben mittelt statt ueber Instanzen. Gemessen wird deshalb
-    das, worauf es ankommt: getroffene Kronen bei IoU 0.5.
+    With Mask R-CNN the validation loss is unfit for model selection -- it
+    routinely keeps rising while accuracy is still improving, because it averages
+    over RPN samples rather than over instances. So what is measured is what
+    matters: crowns hit at IoU 0.5.
     """
     directory = args.prepared / "val"
     index = json.loads((directory / "annotations.json").read_text())
@@ -172,8 +171,8 @@ def run_training(args, device) -> None:
     for epoch in range(1, args.epochs + 1):
         losses = {}
         for phase, loader in loaders.items():
-            # Mask R-CNN gibt nur im Trainingsmodus Verluste zurueck; fuer die
-            # Validierung bleibt der Modus daher stehen, nur der Gradient nicht.
+            # Mask R-CNN only returns losses in training mode; for validation the
+            # mode therefore stays on, only the gradient does not.
             model.train()
             total, count = 0.0, 0
             for images, targets in loader:
@@ -232,8 +231,8 @@ def run_evaluation(args, device) -> None:
         index = json.loads((directory / "annotations.json").read_text())
         stems = sorted(index)
         if args.eval_tiles:
-            # Gleichmaessig ueber den Split greifen, nicht die ersten N --
-            # sonst faellt das alphabetisch spaetere Gebiet ganz heraus.
+            # Sample evenly across the split, not the first N -- otherwise the
+            # alphabetically later area drops out entirely.
             stems = stems[:: max(1, len(stems) // args.eval_tiles)][: args.eval_tiles]
 
         per_area = collections.defaultdict(list)
@@ -257,7 +256,7 @@ def run_evaluation(args, device) -> None:
 
 
 def frame_scale(args, folder: str) -> float:
-    """Massstabsfaktor, damit fremde Frames die BAMFORESTS-Kronengroesse treffen."""
+    """Scale factor so that foreign frames hit the BAMFORESTS crown size."""
     altitude = args.altitudes.get(folder, args.altitude)
     gsd_cm = 100 * altitude * 2 * np.tan(np.radians(args.hfov_deg) / 2) / args.frame_width
     return float(gsd_cm / BAM_GSD_CM)
@@ -297,7 +296,7 @@ def run_prediction(args, device) -> None:
 
 
 def run_inspect(args, device) -> None:
-    """Vorhersage und Wahrheit nebeneinander auf ein paar Testkacheln."""
+    """Prediction and truth side by side on a few test tiles."""
     model = load_trained(args, device)
     fix_input_size(model, args.eval_tile)
     args.out.mkdir(parents=True, exist_ok=True)
@@ -329,38 +328,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_crownseg")
     parser.add_argument("--checkpoint", type=Path, default=CHECKPOINTS / "crownseg_maskrcnn.pth")
 
-    parser.add_argument("--crop", type=int, default=1024, help="Kantenlaenge der Trainingsausschnitte.")
+    parser.add_argument("--crop", type=int, default=1024, help="Edge length of the training crops.")
     parser.add_argument("--scale-jitter", type=float, nargs=2, default=(0.6, 1.8),
-                        help="Massstabsbereich beim Training; <1 simuliert groebere Bodenaufloesung.")
+                        help="Scale range during training; <1 simulates coarser ground sampling.")
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--steps-per-epoch", type=int, default=200)
     parser.add_argument("--val-steps", type=int, default=40)
-    parser.add_argument("--val-f1-tiles", type=int, default=12, help="Ganze Kacheln fuer die F1-Messung je Epoche.")
+    parser.add_argument("--val-f1-tiles", type=int, default=12, help="Whole tiles for the per-epoch F1.")
     parser.add_argument("--epochs", type=int, default=25)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--anchor-scale", type=float, default=2.0,
-                        help="Streckt die Ankerleiter; 2.0 = 64 bis 1024 px.")
-    parser.add_argument("--mask-pool", type=int, default=28, help="RoI-Raster des Maskenkopfs; Ausgabe ist doppelt so gross.")
-    parser.add_argument("--detections", type=int, default=300, help="Obergrenze Instanzen je Fenster.")
+                        help="Stretches the anchor ladder; 2.0 = 64 to 1024 px.")
+    parser.add_argument("--mask-pool", type=int, default=28, help="RoI grid of the mask head; the output is twice as large.")
+    parser.add_argument("--detections", type=int, default=300, help="Cap on instances per window.")
     parser.add_argument("--min-area", type=int, default=400)
 
     parser.add_argument("--splits", nargs="*", default=["test1", "test2"])
-    parser.add_argument("--eval-tile", type=int, default=2048, help="Fenstergroesse bei der Anwendung.")
+    parser.add_argument("--eval-tile", type=int, default=2048, help="Window size at inference.")
     parser.add_argument("--overlap", type=int, default=768,
-                        help="Muss groesser sein als die groesste erwartete Krone.")
-    parser.add_argument("--eval-tiles", type=int, default=60, help="0 = alle Kacheln.")
+                        help="Has to be larger than the largest expected crown.")
+    parser.add_argument("--eval-tiles", type=int, default=60, help="0 = every tile.")
     parser.add_argument("--score-thresh", type=float, default=0.5)
     parser.add_argument("--iou-thresh", type=float, default=0.5)
     parser.add_argument("--inspect-tiles", type=int, default=4)
 
     parser.add_argument("--frames-dir", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--predict-scale", type=float, default=0.0,
-                        help="Fester Faktor; 0 = aus Flughoehe und Bildwinkel bestimmen.")
+                        help="Fixed factor; 0 = derive it from altitude and field of view.")
     parser.add_argument("--altitude", type=float, default=100.0)
-    parser.add_argument("--altitudes", nargs="*", default=[], help="ORDNER=HOEHE, z.B. pines=35")
+    parser.add_argument("--altitudes", nargs="*", default=[], help="FOLDER=ALTITUDE, e.g. pines=35")
     parser.add_argument("--scales", nargs="*", default=[],
-                        help="ORDNER=FAKTOR, gemessen mit scale_probe.py. Schlaegt --altitudes.")
+                        help="FOLDER=FACTOR, measured with scale_probe.py. Overrides --altitudes.")
     parser.add_argument("--hfov-deg", type=float, default=73.7)
     parser.add_argument("--frame-width", type=int, default=1920)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))

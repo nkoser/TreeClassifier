@@ -1,28 +1,27 @@
-"""Baut einen lokalen HTML-Viewer fuer die Segmentierungsergebnisse.
+"""Build a local HTML viewer for the segmentation results.
 
-Statische JPGs sind zum Beurteilen unpraktisch: man kann nicht zoomen, nicht
-zwischen Original und Overlay hin- und herblenden und muss zum Vergleichen
-Dateien in verschiedenen Fenstern oeffnen.
+Static JPGs are impractical for judging: you cannot zoom, cannot fade between
+original and overlay, and have to open files in separate windows to compare
+them.
 
-Der Viewer ist eine einzelne HTML-Datei, die die vorhandenen Bilder per relativem
-Pfad einbindet -- nichts wird kopiert oder hochgeladen. Im Browser oeffnen:
+The viewer is a single HTML file that includes the existing images by relative
+path -- nothing is copied or uploaded. Open it in a browser:
 
     firefox results_views/viewer.html
 
-Mit mehreren --variants laesst sich zwischen Verfahren umschalten, ohne dass sich
-Zoom oder Bildausschnitt aendern -- so sieht man direkt, welches Verfahren eine
-Krone anders schneidet.
+With several --variants you can switch between methods without zoom or viewport
+changing -- so you see directly which method cuts a crown differently.
 
-Bedienung:
-    1-5         Ebene wechseln (Original, Instanzen, Luecken, Relief, Trennungen)
-    Q W E ...   Variante wechseln (bzw. Tab zum Durchschalten)
-    Leertaste   Original einblenden solange gedrueckt (A/B-Vergleich)
-    Pfeiltasten Frame wechseln
-    Mausrad     Zoom, Ziehen verschiebt
-    S           Split-Modus: Trennlinie zwischen Original und Ebene ziehen
-    0           Ansicht zuruecksetzen
+Controls:
+    1-5         switch layer (original, instances, gaps, relief, separations)
+    Q W E ...   switch variant (or Tab to cycle)
+    space       show the original while held down (A/B comparison)
+    arrow keys  change frame
+    mouse wheel zoom; drag to pan
+    S           split mode: drag a divider between original and layer
+    0           reset the view
 
-Beispiel:
+Example:
     python make_viewer.py \
         --variants Hybrid=results_views SAM3=results_views_sam3 Multiskala=results_views_multiskala \
         --out vergleich.html
@@ -288,8 +287,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--views-dir", type=Path, default=REPO_ROOT / "results_views")
     parser.add_argument("--variants", nargs="*", default=None, metavar="NAME=VERZEICHNIS",
-                        help="Mehrere Ansichtsverzeichnisse zum Umschalten, z.B. Hybrid=results_views "
-                             "SAM3=results_views_sam3. Ohne Angabe wird --views-dir benutzt.")
+                        help="Several view directories to switch between, e.g. Hybrid=results_views "
+                             "SAM3=results_views_sam3. Without it, --views-dir is used.")
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--out", type=Path, default=None, help="Default: <views-dir>/viewer.html")
     return parser.parse_args()
@@ -313,8 +312,8 @@ def main() -> None:
     out_path = args.out or variants[0][1] / "viewer.html"
     base = out_path.parent.resolve()
 
-    # Frames ueber alle Varianten einsammeln, damit auch Frames auftauchen, die
-    # nur eine Variante segmentiert hat.
+    # Collect frames across all variants, so that frames segmented by only one
+    # variant show up as well.
     frames: dict[tuple[str, str], dict] = {}
     for variant_name, views_dir in variants:
         if not views_dir.exists():
@@ -339,7 +338,7 @@ def main() -> None:
                 for key, _ in VIEWS[1:]:
                     candidate = (view_folder / f"{stem}_{key}.jpg").resolve()
                     if candidate.exists():
-                        # Relativ zum Viewer, solange moeglich -- sonst absolut.
+                        # Relative to the viewer where possible -- absolute otherwise.
                         try:
                             views[key] = str(candidate.relative_to(base))
                         except ValueError:

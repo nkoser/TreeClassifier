@@ -155,6 +155,34 @@ LABELS=results_frames_eomt sbatch crownseg/sbatch/run_classify.sbatch   # Quebec
 LABELS=results_frames_eomt sbatch crownseg/sbatch/run_cluster.sbatch    # unsupervised clustering, no labels needed
 ```
 
+## Handing it to someone else: the standalone demo
+
+[`demo_sam3_multiscale.py`](demo_sam3_multiscale.py) is a single self-contained
+file that segments tree crowns with SAM 3 at several tile scales. It imports
+nothing from this repository, needs no container and no cluster — copy the file,
+`pip install "transformers>=4.57" torch opencv-python pillow numpy pandas`,
+request access to `facebook/sam3` on Hugging Face, and run:
+
+```bash
+python demo_sam3_multiscale.py --image frame.jpg --out results/
+```
+
+`--image` takes a single file or a folder; a folder is searched recursively and
+its structure is mirrored under `--out`, so frames of the same name in different
+folders keep their own results. Per frame it writes an overlay JPG, a uint16
+label map and a CSV, plus one `all_crowns.csv` for the run. Its defaults are the
+configuration that measured best here (prompt `tree`, threshold 0.15, tile levels
+2/3/4, no shape filter); `--help` explains every knob, and the docstring carries
+the setup, the access instructions and what the input data has to look like —
+the one real requirement being scale, not paths: a crown should be roughly
+60-200 px across.
+
+To check it on the cluster before passing it on:
+
+```bash
+IMAGE=/cold/Mahfuz/chosen_frames/dense/frame_000073.jpg sbatch sbatch/run_demo_sam3.sbatch
+```
+
 ## Scale — read this before interpreting anything
 
 Every model in this repo carries a scale assumption from its training data
@@ -191,6 +219,7 @@ whether 150 px or 400 px are interpreted as 9.73 m.
 | `sbatch/run_detect_only.sbatch` | DeepForest detections only, for diagnosis (`MIN_SCORE=`, `SHOW_SCORES=1`) |
 | `sbatch/run_detect_scale_test.sbatch` | does downscaling help the detector? (`SCALES=`) |
 | `sbatch/run_segment_sam3.sbatch` | SAM 3, text-prompted (`PROMPT=tree`, `THRESHOLD=`, `TILES=`) |
+| `sbatch/run_demo_sam3.sbatch` | run the standalone demo here (`IMAGE=`, `OUT=`, `EXTRA=`) |
 | `sbatch/run_segment_sam.sbatch` | SAM 1, automatic mask generation (`CROWN_PX=`) |
 | `sbatch/run_segment_hybrid.sbatch` | SAM first, depth watershed on the remainder |
 | `sbatch/run_segment_trees.sbatch` | monocular depth + marker watershed (`CROWN_PX=`, `EXTRA="--save-chm"`) |

@@ -1,42 +1,41 @@
-"""Pures gegen feinabgestimmtes Depth Pro -- auf FORTRESS-Gebieten mit Wahrheit.
+"""Pure vs. fine-tuned Depth Pro -- on FORTRESS sites that have ground truth.
 
-Die Testgebiete waren im Training nie zu sehen (der Split steht in
-`index.json` und wird von `prepare.py` gesetzt). Aus ihnen werden dieselben
-virtuellen Nadirframes geschnitten wie im Training, nur ohne Augmentierung und
-mit festem Wurf -- alle Varianten sehen exakt dieselben Ausschnitte.
+The test sites were never seen during training (the split is in `index.json` and
+is set by `prepare.py`). The same virtual nadir frames are cut from them as in
+training, only without augmentation and with a fixed draw -- every variant sees
+exactly the same crops.
 
-Verglichen werden vier Varianten, und die dritte ist die aufschlussreichste:
+Four variants are compared, and the third is the most revealing:
 
-  pur + Bildwinkelkopf   Depth Pro so, wie man es von der Stange nimmt.
-  pur + bekannte Kamera  Derselbe Lauf, aber `k` vorgegeben statt geschaetzt.
-                         Trennt Fehler im Bildwinkel von Fehlern in der Tiefe.
-  pur + Skalenangleich   Zusaetzlich global so skaliert, dass der Median exakt
-                         stimmt. **Kein anwendbares Verfahren, sondern ein
-                         Orakel**: der Faktor kommt aus der Wahrheit. Die Zeile
-                         ist die Obergrenze dessen, was eine reine
-                         Skalenkorrektur je erreichen koennte -- und misst
-                         damit, wie gut die *relative* Struktur ist.
-  pur + Hoehenanker      Skaliert, bis die tiefste Stelle im Bild (95.
-                         Perzentil) der bekannten Flughoehe entspricht. Das ist
-                         anwendbar, denn eine Drohne kennt ihre Hoehe aus
-                         Barometer und GPS. Es setzt aber voraus, dass im Bild
-                         ueberhaupt Boden zu sehen ist -- im geschlossenen
-                         Kronendach ist die tiefste sichtbare Stelle nicht der
-                         Boden, und der Anker verrutscht.
-  feinabgestimmt         Das Ergebnis dieses Projekts: die Skala kommt aus dem
-                         Bild selbst, ohne Anker und ohne Orakel.
-  feinabgestimmt + Anker Beides zusammen.
+  pure + FOV head        Depth Pro as you take it off the shelf.
+  pure + known camera    The same run, but with `k` supplied instead of
+                         estimated. Separates FOV errors from depth errors.
+  pure + scale match     Additionally scaled globally so that the median is
+                         exactly right. **Not an applicable method but an
+                         oracle**: the factor comes from the truth. This row is
+                         the ceiling of what a pure scale correction could ever
+                         reach -- and thereby measures how good the *relative*
+                         structure is.
+  pure + height anchor   Scaled until the deepest point in the image (95th
+                         percentile) matches the known flight altitude. That is
+                         applicable, because a drone knows its altitude from
+                         barometer and GPS. It does presume that ground is
+                         visible at all -- in a closed canopy the deepest visible
+                         point is not the ground, and the anchor slips.
+  fine-tuned             The result of this project: the scale comes from the
+                         image itself, without an anchor and without an oracle.
+  fine-tuned + anchor    Both together.
 
-Mit `--videolook` laufen dieselben Ausschnitte durch Weichzeichnung, Rauschen
-und JPEG-Artefakte. Das ist kein Schoenheitsfehler, sondern die eigentliche
-Frage: unsere Frames sind einzelne Videobilder, das Orthomosaik ist ein aus
-vielen Aufnahmen gerechnetes, gestochen scharfes Produkt. Der Detailgrad ist bei
-einer Nadiraufnahme im Wald aber der einzige Hinweis auf die Flughoehe -- sieht
-das Modell mehr Details, schliesst es auf feinere Bodenaufloesung und damit auf
-geringere Hoehe. Beide Zahlen nebeneinander zeigen, wie stark das durchschlaegt.
+With `--videolook` the same crops run through blur, noise and JPEG artefacts.
+That is not a cosmetic detail but the actual question: our frames are single
+video images, while the orthomosaic is a razor-sharp product computed from many
+captures. In a nadir forest capture the level of detail is the only cue to the
+flight altitude -- if the model sees more detail, it infers finer ground sampling
+and hence a lower altitude. Both numbers side by side show how strongly that
+comes through.
 
     python depthft/evaluate.py --ft /scratch/shared/nik/runs/depthft/bestes
-    python depthft/evaluate.py --videolook          # in der Schaerfe unserer Frames
+    python depthft/evaluate.py --videolook          # at the sharpness of our frames
 """
 
 from __future__ import annotations
@@ -79,7 +78,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, default=Path("/scratch/shared/nik/data/fortress/depthft"))
     parser.add_argument("--ft", type=Path, default=Path("/scratch/shared/nik/runs/depthft/bestes"),
-                        help="Feinabgestimmter Checkpoint.")
+                        help="The fine-tuned checkpoint.")
     parser.add_argument("--pur", default="apple/DepthPro-hf")
     parser.add_argument("--out", type=Path, default=Path("/home/nik/workspace/TreeClassifier/results_depthft"))
     parser.add_argument("--split", default="test", choices=("test", "val", "train"))
@@ -90,12 +89,12 @@ def main() -> None:
     parser.add_argument("--hoehe-max", type=float, default=120.0)
     parser.add_argument("--abstand-min", type=float, default=20.0)
     parser.add_argument("--fov-min", type=float, default=60.0,
-                        help="Zur Auswertung enger als im Training: um unsere Kamera herum.")
+                        help="Narrower than in training for evaluation: around our camera.")
     parser.add_argument("--fov-max", type=float, default=85.0)
     parser.add_argument("--strahl-tiefe", action="store_true",
-                        help="Muss zum Training passen -- steht in bestes/depthft.json.")
+                        help="Has to match the training -- recorded in bestes/depthft.json.")
     parser.add_argument("--videolook", action="store_true",
-                        help="Ausschnitte auf die Schaerfe unserer Videoframes bringen.")
+                        help="Bring the crops to the sharpness of our video frames.")
     parser.add_argument("--beispiele", type=int, default=6)
     parser.add_argument("--seed", type=int, default=4242)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
@@ -115,8 +114,8 @@ def main() -> None:
                         strahl_tiefe=args.strahl_tiefe)
     print(f"{len(daten)} Ausschnitte aus {len(daten.sites)} Gebieten: {', '.join(daten.sites)}", flush=True)
 
-    # Ausschnitte einmal erzeugen und behalten -- so sehen alle Varianten
-    # garantiert dieselben Bilder, auch wenn sich am Datensatz etwas aendert.
+    # Generate the crops once and keep them -- that way every variant is
+    # guaranteed the same images, even if the dataset changes.
     proben = [daten[i] for i in range(len(daten))]
     zeigen = set(np.linspace(0, len(proben) - 1, min(args.beispiele, len(proben))).astype(int).tolist())
 
@@ -141,11 +140,11 @@ def main() -> None:
             if fov is not None:
                 varianten[f"{name}_fovkopf"] = inferenz.k_von_fov(fov) / D
             d = varianten[f"{name}_kamera"]
-            # Anker aus der bekannten Flughoehe -- ohne Wahrheit, also anwendbar.
+            # Anchor from the known flight altitude -- no truth needed, so applicable.
             boden = float(np.percentile(d[maske], 95))
             varianten[f"{name}_hoehenanker"] = d * (H / max(boden, 1e-6))
             if name == "pur":
-                # Orakel: kennt den wahren Median. Nur als Obergrenze zu lesen.
+                # Oracle: it knows the true median. To be read as a ceiling only.
                 faktor = float(np.median(d_gt[maske]) / max(np.median(d[maske]), 1e-6))
                 varianten["pur_skalenangleich"] = d * faktor
 
@@ -176,9 +175,9 @@ def main() -> None:
     tabelle.to_csv(args.out / f"metriken_{kennung}.csv", index=False)
 
     spalten = ["absrel", "mae_m", "rmse_m", "bias_m", "delta125", "skalenfehler"]
-    # Ausschnitte desselben Gebiets sind stark korreliert. Deshalb ist das
-    # Gebiet, nicht der Ausschnitt, die statistische Einheit: erst innerhalb
-    # eines Gebiets mitteln, dann alle Gebiete gleich gewichten.
+    # Crops of the same site are strongly correlated. So the site, not the crop,
+    # is the statistical unit: average within a site first, then weight all sites
+    # equally.
     je_gebiet = tabelle.groupby(["variante", "gebiet"])[spalten].mean()
     zusammen = je_gebiet.groupby("variante").mean().sort_values("absrel")
     streuung = je_gebiet.groupby("variante").std()

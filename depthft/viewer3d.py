@@ -1,16 +1,15 @@
-"""Einen interaktiven 3D-Betrachter als einzelne HTML-Datei schreiben.
+"""Write an interactive 3D viewer as a single HTML file.
 
-Herauskommt eine Datei, die im Browser geoeffnet wird -- kein Server, keine
-Installation, nichts nachzuladen. Punkte, Farben und das Bodenbild stecken
-eingebettet darin, gezeichnet wird mit WebGL.
+The result is a file you open in a browser -- no server, no installation, nothing
+to fetch. Points, colours and the ground image are embedded in it, and the
+drawing is done with WebGL.
 
-Die Koordinaten werden als int16 abgelegt statt als float32. Das halbiert die
-Dateigroesse und kostet nichts: bei einer Szene von gut 100 m Kantenlaenge
-betraegt die Schrittweite rund 3 mm, weit unter allem, was die Tiefenschaetzung
-aufloest.
+The coordinates are stored as int16 rather than float32. That halves the file
+size and costs nothing: for a scene a good 100 m across, the step size is about
+3 mm, far below anything the depth estimate resolves.
 
-Bedienung im Betrachter: ziehen dreht, Rad zoomt, rechte Maustaste verschiebt.
-Farbe, Punktgroesse und eine Hoehenschwelle sind einstellbar.
+Controls in the viewer: drag rotates, the wheel zooms, the right mouse button
+pans. Colour, point size and a height threshold are adjustable.
 
     python depthft/viewer3d.py --frames 80m/frame_000297.jpg
 """
@@ -297,18 +296,18 @@ def main() -> None:
     parser.add_argument("--ft", type=Path,
                         default=Path("/scratch/shared/nik/runs/depthft/bestes"))
     parser.add_argument("--modellart", default="tiefe", choices=("tiefe", "hoehe"),
-                        help="tiefe: ueber die Tiefe, mit Gelaendemodell. hoehe: gibt Meter "
-                             "unmittelbar aus, unterscheidet aber nicht zwischen Bestaenden.")
+                        help="tiefe: via the depth, with a terrain model. hoehe: outputs metres "
+                             "directly, but does not distinguish between stands.")
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_3d"))
     parser.add_argument("--frames", nargs="*", default=None, metavar="ORDNER/DATEI")
     parser.add_argument("--hfov-deg", type=float, default=48.0)
-    parser.add_argument("--schritt", type=int, default=3, help="Jedes n-te Pixel.")
+    parser.add_argument("--schritt", type=int, default=3, help="Every n-th pixel.")
     parser.add_argument("--max-punkte", type=int, default=260000,
-                        help="Obergrenze; darueber wird zufaellig ausgeduennt.")
+                        help="Upper bound; above it points are thinned at random.")
     parser.add_argument("--max-neigung", type=float, default=8.0)
     parser.add_argument("--min-hoehe", type=float, default=0.5)
-    parser.add_argument("--boden-breite", type=int, default=1400, help="Aufloesung der Bodentextur.")
+    parser.add_argument("--boden-breite", type=int, default=1400, help="Resolution of the ground texture.")
     parser.add_argument("--ohne-boden", action="store_true")
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE",
                         default=["dense=51", "dense1=69", "mixed=92", "mixed1=103",
@@ -359,7 +358,7 @@ def main() -> None:
         h, w = tiefe.shape
         f_px = k * w
         gsd = H / f_px
-        # Beim Hoehenmodell steckt der Bodenbezug schon in der Vorhersage.
+        # With the height model the ground reference is already in the prediction.
         boden = (tiefe + hoehe_direkt if hoehe_direkt is not None
                  else bodenmodell(tiefe, gsd, args.kachel_m, 97.0, args.boden_faktor))
 
@@ -383,7 +382,7 @@ def main() -> None:
             print(f"  {name}: zu wenige Punkte", flush=True)
             continue
 
-        # int16 statt float32: halbe Dateigroesse, Schrittweite im Millimeterbereich.
+        # int16 instead of float32: half the file size, step size in millimetres.
         mins = xyz.min(axis=0)
         spanne = float(np.max(xyz.max(axis=0) - mins))
         skala = spanne / 32000.0

@@ -1,9 +1,9 @@
-"""Den feinabgestimmten Checkpoint versandfertig machen.
+"""Make the fine-tuned checkpoint ready to ship.
 
-Herauskommt ein Ordner, den jemand ohne dieses Repository benutzen kann:
-Gewichte im Hugging-Face-Format, der passende Bildprozessor, das schlanke
-Anwendungsmodul und eine Modellkarte, in der die eine Sache steht, an der sonst
-alles scheitert -- dass der Bildwinkel vorgegeben und nicht geschaetzt gehoert.
+The result is a folder someone without this repository can use: weights in
+Hugging Face format, the matching image processor, the lean inference module and
+a model card stating the one thing everything else depends on -- that the field
+of view belongs supplied, not estimated.
 
     python depthft/export.py --ft /scratch/shared/nik/runs/depthft/bestes --tar
 """
@@ -174,9 +174,9 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("/scratch/shared/nik/runs/depthft/versand"))
     parser.add_argument("--metriken", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft/zusammenfassung_test.json"))
-    parser.add_argument("--basis", default="apple/DepthPro-hf", help="Woher der Bildprozessor kommt.")
+    parser.add_argument("--basis", default="apple/DepthPro-hf", help="Where the image processor comes from.")
     parser.add_argument("--name", default="depthpro-fortress-nadir")
-    parser.add_argument("--tar", action="store_true", help="Zusaetzlich ein tar.gz danebenlegen.")
+    parser.add_argument("--tar", action="store_true", help="Also place a tar.gz next to it.")
     parser.add_argument("--pruefen", action="store_true", default=True)
     parser.add_argument("--no-pruefen", dest="pruefen", action="store_false")
     args = parser.parse_args()

@@ -1,25 +1,25 @@
-"""Nicht-Kronen aus einer Labelkarte entfernen: Wiese, Weg, Dach.
+"""Remove non-crowns from a label map: meadow, path, roof.
 
-BAMFORESTS ist reiner Wald und kennt nur die Klasse `tree`. Alles andere ist dort
-unmarkierter Hintergrund, kein Gegenbeispiel -- ein darauf trainiertes Modell hat
-nie gelernt, dass Rasen oder Asphalt *kein* Baum ist, weil es nie eines gesehen
-hat. Auf den urbanen Frames segmentiert EoMT deshalb Parkwiesen und Wegraender.
+BAMFORESTS is pure forest and knows only the class `tree`. Everything else there
+is unlabelled background, not a counter-example -- a model trained on it never
+learned that lawn or asphalt is *not* a tree, because it never saw one. On the
+urban frames EoMT therefore segments park meadows and path edges.
 
-Zwei Eigenschaften trennen eine Krone davon, und beide kommen ohne zusaetzliches
-Training aus:
+Two properties separate a crown from those, and both need no additional
+training:
 
-  textur  Ein Kronendach ist hochfrequent -- Zweige, Blattgruppen, Schattenwurf.
-          Eine Wiese und eine Asphaltflaeche sind glatt. Gemessen als mittlerer
-          Betrag des Laplace-Operators innerhalb der Maske, bezogen auf den
-          Bildmedian, damit die Zahl nicht an der Belichtung haengt.
-  relief  Eine Krone ragt ueber ihre Umgebung, eine Wiese nicht. Gemessen als
-          Hoehenunterschied zwischen der Maske und einem Ring um sie herum, im
-          Ersatz-CHM aus der Tiefenschaetzung. Genau die Rolle, in der ein
-          Hoehenmodell etwas taugt -- als Verwerfer, nicht als Detektor.
+  texture A canopy is high-frequency -- branches, leaf clusters, cast shadow.
+          A meadow and an asphalt surface are smooth. Measured as the mean
+          magnitude of the Laplacian inside the mask, relative to the image
+          median, so that the number does not depend on the exposure.
+  relief  A crown rises above its surroundings, a meadow does not. Measured as
+          the height difference between the mask and a ring around it, in the
+          surrogate CHM from the depth estimate. Exactly the role in which a
+          height model is any good -- as a rejector, not as a detector.
 
-Beides sind Filter auf fertigen Instanzen, sie koennen also nur wegnehmen. Der
-Nutzen muss sich entsprechend als hoehere Praezision bei gleicher Trefferquote
-zeigen, sonst ist es keiner.
+Both are filters on finished instances, so they can only take away. The benefit
+accordingly has to show up as higher precision at the same recall, otherwise
+there is none.
 
     python crownseg/reject.py --labels results_frames_eomt_final --frames-dir /cold/...
 """
@@ -45,7 +45,7 @@ def texture_map(image_bgr: np.ndarray) -> np.ndarray:
 
 def instance_features(labels: np.ndarray, texture: np.ndarray,
                       chm: np.ndarray | None, ring_px: int) -> dict[int, dict]:
-    """Textur und Relief je Instanz. Das Relief braucht einen Ring aussen herum."""
+    """Texture and relief per instance. The relief needs a ring around the mask."""
     reference = float(np.median(texture)) + 1e-6
     features = {}
     kernel = np.ones((ring_px, ring_px), np.uint8)
@@ -56,8 +56,8 @@ def instance_features(labels: np.ndarray, texture: np.ndarray,
         mask = labels == value
         entry = {"textur": float(texture[mask].mean() / reference)}
         if chm is not None:
-            # Ring ausserhalb der Maske, aber ohne andere Kronen -- sonst misst
-            # man den Hoehenunterschied zum Nachbarbaum statt zum Boden.
+            # A ring outside the mask but excluding other crowns -- otherwise you
+            # measure the height difference to the neighbouring tree, not the ground.
             grown = cv2.dilate(mask.astype(np.uint8), kernel).astype(bool)
             ring = grown & ~mask & (labels == 0)
             entry["relief"] = float(chm[mask].mean() - chm[ring].mean()) if ring.sum() > 20 else 0.0
@@ -84,7 +84,7 @@ def load_chm(path: Path | None, shape: tuple[int, int], crown_px: float) -> np.n
         return None
     raw = np.load(path).astype(np.float32) if path.suffix == ".npy" else \
         cv2.imread(str(path), cv2.IMREAD_GRAYSCALE).astype(np.float32)
-    surface = -raw if path.suffix == ".npy" else raw  # .npy ist Tiefe, .png bereits Hoehe
+    surface = -raw if path.suffix == ".npy" else raw  # .npy is depth, .png already height
     if surface.shape != shape:
         surface = cv2.resize(surface, shape[::-1], interpolation=cv2.INTER_LINEAR)
     trend = cv2.GaussianBlur(surface, (0, 0), max(1.0, crown_px * 3.0))
@@ -95,16 +95,16 @@ def load_chm(path: Path | None, shape: tuple[int, int], crown_px: float) -> np.n
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--labels", type=Path, required=True, help="Ordner mit <ordner>/<stem>_labels.png")
-    parser.add_argument("--images", type=Path, required=True, help="Wurzel der zugehoerigen Bilder.")
+    parser.add_argument("--labels", type=Path, required=True, help="Folder with <folder>/<stem>_labels.png")
+    parser.add_argument("--images", type=Path, required=True, help="Root of the corresponding images.")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--depth-cache", type=Path, default=None,
-                        help="Ordner mit <ordner>__<stem>.npy; ohne das laeuft nur der Texturfilter.")
+                        help="Folder with <folder>__<stem>.npy; without it only the texture filter runs.")
     parser.add_argument("--min-texture", type=float, default=0.9)
     parser.add_argument("--min-relief", type=float, default=None)
     parser.add_argument("--ring-px", type=int, default=25)
     parser.add_argument("--crown-px", type=float, default=100.0)
-    parser.add_argument("--report-only", action="store_true", help="Nur Kennzahlen ausgeben, nichts schreiben.")
+    parser.add_argument("--report-only", action="store_true", help="Only print metrics, write nothing.")
     args = parser.parse_args()
 
     maps = sorted(args.labels.rglob("*_labels.png"))

@@ -1,18 +1,18 @@
-"""Depth Pro anwenden -- mit vorgegebener Kamera statt geschaetztem Bildwinkel.
+"""Apply Depth Pro -- with a supplied camera instead of an estimated field of view.
 
-Depth Pro liefert kanonische inverse Tiefe. Meter werden daraus ueber
+Depth Pro returns canonical inverse depth. Metres come from it via
 
     d = k / D_roh        mit  k = f_px / Bildbreite = 0.5 / tan(HFOV / 2)
 
-Der Bildwinkelkopf des Modells schaetzt `k` mit, wenn man ihn laesst. Bei einer
-Drohne mit bekanntem Objektiv ist das die schlechtere Wahl: der Kopf ist auf
-Bodenperspektiven trainiert und liegt bei Nadiraufnahmen aus 80 m regelmaessig
-daneben -- und ein Fehler in `k` geht linear in jede Tiefe ein.
+The field-of-view head of the model will estimate `k` if you let it. With a drone
+whose lens is known that is the worse choice: the head is trained on ground
+perspectives and is regularly wrong on nadir captures from 80 m -- and an error
+in `k` enters every depth linearly.
 
-Deshalb ist `k` hier vorgabefaehig. Genau so wurde auch feinabgestimmt.
+So `k` can be supplied here. The fine-tuning was done exactly that way too.
 
-Dieses Modul ist bewusst schlank und ohne Projektabhaengigkeiten, damit es dem
-feinabgestimmten Checkpoint beigelegt werden kann.
+This module is deliberately lean and free of project dependencies, so that it can
+ship alongside the fine-tuned checkpoint.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ MIN_D = 1e-6
 
 
 def k_von_fov(fov_grad: float) -> float:
-    """Brennweite geteilt durch Bildbreite."""
+    """Focal length divided by image width."""
     return 0.5 / math.tan(math.radians(fov_grad) / 2.0)
 
 
@@ -39,12 +39,12 @@ def fov_von_k(k: float) -> float:
 
 
 def gsd_von_flughoehe(flughoehe_m: float, fov_grad: float, breite_px: int) -> float:
-    """Bodenaufloesung in m/px bei Nadirblick."""
+    """Ground sampling in m/px for a nadir view."""
     return 2.0 * flughoehe_m * math.tan(math.radians(fov_grad) / 2.0) / breite_px
 
 
 def lade(quelle: str, device, *, fov_head: bool = False):
-    """Modell laden. `fov_head=False` spart einen zweiten Encoderdurchlauf."""
+    """Load the model. `fov_head=False` saves a second encoder pass."""
     from transformers import DepthProForDepthEstimation
 
     model = DepthProForDepthEstimation.from_pretrained(quelle, dtype=torch.float32).to(device).eval()
@@ -55,10 +55,10 @@ def lade(quelle: str, device, *, fov_head: bool = False):
 @torch.no_grad()
 def roh(model, bild_rgb: np.ndarray, *, device=None, modellgroesse: int = MODELLGROESSE,
         bf16: bool = True) -> tuple[np.ndarray, float | None]:
-    """Kanonische inverse Tiefe in Originalgroesse, dazu der geschaetzte Bildwinkel.
+    """Canonical inverse depth at original size, plus the estimated field of view.
 
-    Getrennt von `tiefe`, damit dieselbe Vorhersage gegen mehrere Annahmen ueber
-    die Kamera gerechnet werden kann, ohne das Modell erneut laufen zu lassen.
+    Separate from `tiefe`, so that the same prediction can be evaluated against
+    several assumptions about the camera without running the model again.
     """
     device = device or next(model.parameters()).device
     h, w = bild_rgb.shape[:2]
@@ -81,10 +81,10 @@ def roh(model, bild_rgb: np.ndarray, *, device=None, modellgroesse: int = MODELL
 
 def tiefe(model, bild_rgb: np.ndarray, *, k: float | None = None, device=None,
           modellgroesse: int = MODELLGROESSE, bf16: bool = True) -> tuple[np.ndarray, float]:
-    """Metrische Tiefenkarte in Originalgroesse plus das benutzte `k`.
+    """Metric depth map at original size, plus the `k` that was used.
 
-    `k=None` heisst: den Bildwinkelkopf fragen. Dafuer muss das Modell mit
-    `fov_head=True` geladen sein.
+    `k=None` means: ask the field-of-view head. The model then has to be loaded
+    with `fov_head=True`.
     """
     D, fov = roh(model, bild_rgb, device=device, modellgroesse=modellgroesse, bf16=bf16)
     if k is None:
@@ -95,27 +95,26 @@ def tiefe(model, bild_rgb: np.ndarray, *, k: float | None = None, device=None,
 
 
 def hoehe_ueber_boden(tiefe_m: np.ndarray, flughoehe_m: float) -> np.ndarray:
-    """Aus Tiefe wird Hoehe, sobald die Flughoehe bekannt ist."""
+    """Depth becomes height as soon as the flight altitude is known."""
     return flughoehe_m - tiefe_m
 
 
 def karten_von(model, bild_rgb: np.ndarray, *, art: str, k: float | None = None,
                flughoehe_m: float | None = None, device=None,
                modellgroesse: int = MODELLGROESSE) -> tuple[np.ndarray, np.ndarray | None]:
-    """Tiefe und Hoehe ueber Boden -- aus dem Tiefen- oder dem Hoehenmodell.
+    """Depth and height above ground -- from the depth or from the height model.
 
-    Es gibt zwei Checkpoints, die dieselbe Architektur, aber verschiedene
-    Ausgaben haben:
+    There are two checkpoints with the same architecture but different outputs:
 
-    `art="tiefe"`   Die Ausgabe ist kanonische inverse Tiefe; Meter entstehen
-                    ueber `d = k / D`. Die Hoehe bleibt offen -- sie braucht
-                    entweder die Flughoehe oder ein Gelaendemodell.
-    `art="hoehe"`   Die Ausgabe ist unmittelbar die Hoehe ueber Boden in Metern.
-                    Weder Bildwinkel noch Bodenbezug noetig. Die Tiefe folgt aus
-                    `d = H - h` und wird nur fuer die Rueckprojektion nach 3D
-                    gebraucht.
+    `art="tiefe"`   The output is canonical inverse depth; metres come from
+                    `d = k / D`. The height stays open -- it needs either the
+                    flight altitude or a terrain model.
+    `art="hoehe"`   The output is directly the height above ground in metres.
+                    Neither field of view nor ground reference is needed. The
+                    depth follows from `d = H - h` and is only needed for the
+                    back-projection into 3D.
 
-    Gibt `(tiefe_m, hoehe_m_oder_None)` zurueck.
+    Returns `(tiefe_m, hoehe_m_oder_None)`.
     """
     karte, _ = roh(model, bild_rgb, device=device, modellgroesse=modellgroesse)
     if art == "hoehe":

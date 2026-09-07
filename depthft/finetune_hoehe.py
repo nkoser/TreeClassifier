@@ -1,31 +1,31 @@
-"""Depth Pro auf die **Hoehe ueber Boden** abstimmen statt auf die Tiefe.
+"""Tune Depth Pro on the **height above ground** instead of on the depth.
 
-Bisher sagt das Modell Tiefe voraus, und wir rechnen daraus die Hoehe. Dieser
-Umweg kostet doppelt.
+So far the model predicts depth and we compute the height from it. That detour
+costs twice.
 
-**Er optimiert das Falsche.** Der Verlust minimiert den Tiefenfehler; interessant
-ist aber der Hoehenfehler. Beide haengen zusammen, nur nicht guenstig: die Hoehe
-ist eine Differenz zweier grosser Zahlen (80 m Flughoehe minus 60 m Tiefe gibt
-20 m Baum). Ein Tiefenfehler von 5 m wandert unvermindert in die Hoehe, wo er
-relativ viermal so schwer wiegt. Gemessen: 12 % relativer Fehler auf der Tiefe
-werden zu rund 19 % auf der Hoehe.
+**It optimises the wrong thing.** The loss minimises the depth error, while what
+is of interest is the height error. The two are related, but not favourably: the
+height is a difference of two large numbers (80 m altitude minus 60 m depth gives
+a 20 m tree). A depth error of 5 m carries undiminished into the height, where it
+weighs four times as much in relative terms. Measured: a 12 % relative error on
+the depth becomes about 19 % on the height.
 
-**Er braucht zwei Zahlen, die wir nicht kennen.** Aus der Tiefe wird eine Hoehe
-nur mit Bildwinkel und Bodenbezug. Der Bildwinkel ist bei uns rueckgerechnet und
-auf 10 % genau, der Bodenbezug geschaetzt. Beides geht linear in jede Hoehe ein.
+**It needs two numbers we do not know.** Depth becomes height only with a field
+of view and a ground reference. Our field of view is back-calculated and accurate
+to 10 %, the ground reference is estimated. Both enter every height linearly.
 
-Sagt das Modell die Hoehe direkt vorher, faellt beides weg. Genau das ist ein
-**Canopy Height Model**, und FORTRESS liefert die Wahrheit dafuer als nDSM.
+If the model predicts the height directly, both drop away. That is precisely a
+**canopy height model**, and FORTRESS supplies the truth for it as an nDSM.
 
-**Der Ausgaberaum.** Der Kopf von Depth Pro endet auf ReLU, gibt also nichts
-Negatives aus -- fuer Hoehen ueber Boden genau richtig. Seine Ausgabe wird
-unmittelbar als Meter gelesen, ohne Umrechnung. Vorgespannt wird wie beim
-Tiefentraining, nur gegen die Hoehe.
+**The output space.** The head of Depth Pro ends on a ReLU, so it outputs nothing
+negative -- exactly right for heights above ground. Its output is read directly
+as metres, without conversion. Pre-scaling works as in the depth training, only
+against the height.
 
-**Der Verlust** ist L1 auf Metern, geteilt durch eine Bezugshoehe, damit die
-Groessenordnung bei eins liegt und `--lambda-grad` dieselbe Bedeutung behaelt wie
-im Tiefentraining. L1 auf Metern und nicht auf dem Logarithmus, weil die Hoehe
-am Boden null wird und weil der Fehler, um den es geht, in Metern gemessen wird.
+**The loss** is L1 on metres, divided by a reference height so that the magnitude
+is around one and `--lambda-grad` keeps the same meaning as in the depth
+training. L1 on metres and not on the logarithm, because the height goes to zero
+at the ground and because the error at issue is measured in metres.
 
     python depthft/finetune_hoehe.py --epochs 8
 """
@@ -50,17 +50,17 @@ from finetune import (  # noqa: E402
     start_epoche_bekannt, trainingsmodus, vorhersage,
 )
 
-MIN_HOEHE_FUERS_MESSEN = 2.0   # unter Kniehoehe ist das Verhaeltnis nicht aussagekraeftig
+MIN_HOEHE_FUERS_MESSEN = 2.0   # below knee height the ratio is not meaningful
 
 
 def kennzahlen(h_pred: torch.Tensor, h_gt: torch.Tensor, maske: torch.Tensor) -> dict[str, float]:
-    """Guete in Metern. `mae_m` ist die Zahl, um die es geht."""
+    """Quality in metres. `mae_m` is the number that matters."""
     if maske.sum() == 0:
         return {}
     p, g = h_pred[maske], h_gt[maske]
     fehler = p - g
-    # Korrelation ueber die abweichungen vom Mittel -- misst, ob das Relief
-    # stimmt, unabhaengig von einem gleichmaessigen Versatz.
+    # Correlation over the deviations from the mean -- measures whether the relief
+    # is right, independently of a uniform offset.
     pz, gz = p - p.mean(), g - g.mean()
     nenner = (pz.norm() * gz.norm()).clamp_min(1e-6)
     hoch = g > MIN_HOEHE_FUERS_MESSEN
@@ -96,10 +96,10 @@ def durchlauf(model, batch, args, device, encoder_frozen: bool):
 
 @torch.no_grad()
 def vorspannen(model, lader, args, device, encoder_frozen: bool, stapel: int) -> float:
-    """Den Kopf auf Meter einstellen, bevor trainiert wird.
+    """Set the head to metres before training starts.
 
-    Gemessen wird ueber Bildpunkte mit nennenswerter Hoehe: am Boden ist das
-    Verhaeltnis von Vorhersage zu Wahrheit nicht aussagekraeftig.
+    Measurement runs over pixels with an appreciable height: at ground level the
+    ratio of prediction to truth is not meaningful.
     """
     trainingsmodus(model, encoder_frozen, False)
     faktoren = []
@@ -170,9 +170,9 @@ def main() -> None:
     parser.add_argument("--grad-stufen", type=int, default=4)
     parser.add_argument("--grad-checkpointing", action="store_true")
     parser.add_argument("--bezugshoehe", type=float, default=20.0,
-                        help="Der Verlust wird dadurch geteilt, damit er bei eins liegt.")
+                        help="The loss is divided by this, so that it sits around one.")
     parser.add_argument("--hoehe-deckel", type=float, default=70.0,
-                        help="Obergrenze der Vorhersage; hoeher wird im Schwarzwald kein Baum.")
+                        help="Cap on the prediction; no tree in the Black Forest is taller.")
     parser.add_argument("--vorspannen", default="auto")
     parser.add_argument("--vorspann-stapel", type=int, default=12)
     parser.add_argument("--crop-px", type=int, default=1536)
@@ -230,8 +230,8 @@ def main() -> None:
         if not (0 < vorgespannt < 1e6):
             vorgespannt = 1.0
         if vorgespannt != 1.0:
-            # Der Kopf soll Meter ausgeben; gemessen wird, um welchen Faktor er
-            # danebenliegt, und genau damit wird seine letzte Faltung skaliert.
+            # The head should output metres; what is measured is the factor it is
+            # off by, and its last convolution is scaled by exactly that.
             kopf_schicht = kopf_skalieren(model, 1.0 / vorgespannt)
             print(f"Kopf um {1/vorgespannt:.2f} vorgespannt (Ausgabe lag um Faktor "
                   f"{vorgespannt:.4f} neben der Hoehe)", flush=True)

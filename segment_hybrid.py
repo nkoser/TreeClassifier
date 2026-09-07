@@ -1,22 +1,22 @@
-"""Hybride Kronenabgrenzung: SAM zuerst, Tiefen-Watershed nur fuer den Rest.
+"""Hybrid crown delineation: SAM first, depth watershed only for the remainder.
 
-Die beiden bisherigen Verfahren haben komplementaere Staerken und Schwaechen:
+The two previous methods have complementary strengths and weaknesses:
 
-  SAM       findet praezise Kronenraender, wo es Kantenkontrast gibt, und laesst
-            Unsicheres weg -- hohe Praezision, Abdeckung nur 50-74 %.
-  Watershed partitioniert die Flaeche vollstaendig, aber es ist eine Partition,
-            kein Detektor: es kachelt auch dort zu, wo kein Baum ist.
+  SAM       finds precise crown boundaries where there is edge contrast and
+            leaves out the uncertain parts -- high precision, coverage 50-74 %.
+  Watershed partitions the area completely, but it is a partition, not a
+            detector: it also tiles over places where there is no tree.
 
-Der Hybrid nutzt jedes Verfahren dort, wo es stark ist: SAM legt die sicheren
-Kronen fest, danach laeuft das Watershed **ausschliesslich auf der Restflaeche**
-zwischen den SAM-Kronen. Damit kann es nicht mehr das ganze Bild zukacheln, und
-seine bekannte Schwaeche -- Pseudo-Kronen in strukturarmen Bereichen -- wird durch
-die Prominenzpruefung und dieselben Formfilter wie bei SAM begrenzt.
+The hybrid uses each method where it is strong: SAM fixes the certain crowns,
+then the watershed runs **exclusively on the area left over** between the SAM
+crowns. It can therefore no longer tile over the whole image, and its known
+weakness -- pseudo-crowns in structurally poor areas -- is limited by the
+prominence check and the same shape filters as for SAM.
 
-Jede Krone traegt in der Ausgabe ihre Herkunft (`quelle` = sam | watershed), damit
-sich die Qualitaet der beiden Anteile getrennt beurteilen laesst.
+Every crown carries its origin in the output (`quelle` = sam | watershed), so
+that the quality of the two parts can be judged separately.
 
-Beispiel:
+Example:
     python segment_hybrid.py --frames 100/frame_000537.jpg
 """
 
@@ -42,15 +42,15 @@ from segment_trees import DEPTH_MODEL, DepthEstimator, build_pseudo_chm
 def residual_crowns(
     chm: np.ndarray, residual: np.ndarray, args
 ) -> tuple[pd.DataFrame, list[np.ndarray]]:
-    """Watershed auf der von SAM nicht erfassten Flaeche.
+    """Watershed on the area SAM did not capture.
 
-    Wichtig: die Prominenzschwelle wird auf der *Restflaeche* berechnet, nicht auf
-    dem ganzen Bild. Sonst dominiert das Relief der bereits gefundenen SAM-Kronen
-    die Statistik und der Rest faellt pauschal unter die Schwelle.
+    Important: the prominence threshold is computed on the *remaining area*, not
+    on the whole image. Otherwise the relief of the SAM crowns already found
+    dominates the statistics and the rest falls below the threshold wholesale.
     """
     smoothed = cv2.GaussianBlur(chm, (0, 0), max(0.8, args.crown_px * args.smooth_factor))
 
-    # Luecken, Boden und Schatten in der Restflaeche ausschliessen.
+    # Exclude gaps, ground and shadow within the remaining area.
     if residual.sum() < 10:
         return pd.DataFrame(), []
     canopy = residual & (smoothed > np.percentile(smoothed[residual], args.gap_percentile))
@@ -77,7 +77,7 @@ def residual_crowns(
     if not records:
         return pd.DataFrame(), []
 
-    # Dieselben Formfilter wie bei SAM, damit beide Anteile vergleichbar sind.
+    # The same shape filters as for SAM, so both parts stay comparable.
     frame = pd.DataFrame(records)
     expected_area = np.pi * (args.crown_px / 2) ** 2
     keep = (
@@ -85,7 +85,7 @@ def residual_crowns(
         & (frame["kompaktheit"] >= args.min_compactness)
         & (frame["solidity"] >= args.min_solidity)
     )
-    frame["score"] = np.nan  # Watershed liefert keinen Konfidenzwert.
+    frame["score"] = np.nan  # the watershed provides no confidence value
     return frame[keep].reset_index(drop=True), [m for m, k in zip(masks, keep) if k]
 
 
@@ -98,10 +98,10 @@ def draw_hybrid(image_bgr: np.ndarray, sam_masks, ws_masks, crowns: pd.DataFrame
 
     for mask in sam_masks:
         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(canvas, contours, -1, (80, 230, 120), 2)  # gruen = SAM
+        cv2.drawContours(canvas, contours, -1, (80, 230, 120), 2)  # green = SAM
     for mask in ws_masks:
         contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(canvas, contours, -1, (255, 190, 60), 2)  # blau = Watershed-Ergaenzung
+        cv2.drawContours(canvas, contours, -1, (255, 190, 60), 2)  # blue = watershed addition
 
     for row in crowns.itertuples():
         cv2.circle(canvas, (int(row.cx), int(row.cy)), 3, (0, 220, 255), -1)
@@ -138,8 +138,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--gap-percentile", type=float, default=15.0)
     parser.add_argument("--peak-prominence", type=float, default=0.10)
     parser.add_argument("--dilate-sam", type=int, default=3,
-                        help="SAM-Masken vor der Restflaechenbildung leicht aufweiten, damit "
-                             "Randsaeume nicht als eigene Mini-Kronen ueberleben.")
+                        help="Dilate the SAM masks slightly before forming the remainder, so "
+                             "that margin seams do not survive as mini crowns of their own.")
 
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
@@ -195,9 +195,9 @@ def main() -> None:
             ws_crowns["quelle"] = "watershed"
         crowns = pd.concat([f for f in (sam_crowns, ws_crowns) if len(f)], ignore_index=True)
 
-        # Labelkarte: Instanz-IDs 1..N in derselben Reihenfolge wie die CSV-Zeilen.
-        # Damit laesst sich die Visualisierung spaeter beliebig neu rendern, ohne
-        # SAM und das Tiefenmodell erneut laufen zu lassen.
+        # Label map: instance ids 1..N in the same order as the CSV rows. That
+        # allows the visualisation to be re-rendered later at will, without
+        # running SAM and the depth model again.
         label_map = np.zeros(image_rgb.shape[:2], dtype=np.uint16)
         for index, mask in enumerate(sam_masks + ws_masks, start=1):
             label_map[mask] = index

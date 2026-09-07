@@ -1,25 +1,24 @@
-"""Falsch getrennte Kronen wieder zusammenfuehren.
+"""Merge wrongly separated crowns back together.
 
-Die Segmentierung zerlegt einzelne Baeume haeufig in mehrere Polygone. Dieses
-Skript fuehrt Nachbarinstanzen zusammen, wenn zwei unabhaengige Kriterien dafuer
-sprechen, dass sie zum selben Baum gehoeren:
+The segmentation often breaks a single tree into several polygons. This script
+merges neighbouring instances when two independent criteria indicate that they
+belong to the same tree:
 
-  Sattelprominenz  Zwischen den Wipfeln zweier echter Nachbarbaeume liegt eine
-                   Kerbe. Laeuft die Grenze dagegen ueber eine durchgehende
-                   Kuppel, ist der Sattel flach -- Hinweis auf Falschtrennung.
-  Farbabstand      Zwei Teile derselben Krone haben nahezu dieselbe Farbe. Zwei
-                   verschiedene Baeume unterscheiden sich meist messbar. Gerechnet
-                   wird im Lab-Raum, wo Abstaende der Wahrnehmung entsprechen.
+  saddle prominence  Between the tops of two genuinely neighbouring trees there
+                     is a notch. If the boundary instead runs across a continuous
+                     dome, the saddle is flat -- a sign of a false separation.
+  colour distance    Two parts of the same crown have almost the same colour. Two
+                     different trees usually differ measurably. Computed in Lab
+                     space, where distances match perception.
 
-Beide muessen zustimmen. Das ist wichtig, weil die Sattelprominenz gegen die
-geschaetzte monokulare Tiefe misst -- die schwaechste Stelle der Pipeline. Der
-Farbabstand ist davon voellig unabhaengig und faengt deren Fehler teilweise ab.
+Both have to agree. That matters because the saddle prominence measures against
+the estimated monocular depth -- the weakest point of the pipeline. The colour
+distance is entirely independent of it and partly catches its errors.
 
-Eine Flaechenobergrenze verhindert, dass sich Verschmelzungen zu Grossblobs
-aufschaukeln. Weil jede Verschmelzung Wipfel und Saettel veraendert, laeuft das
-Ganze in mehreren Runden.
+An area ceiling prevents merges from escalating into giant blobs. Because every
+merge changes treetops and saddles, the whole thing runs in several rounds.
 
-Beispiel:
+Example:
     python merge_crowns.py --segments results_sam3/multiskala --out results_merged
 """
 
@@ -55,7 +54,7 @@ class UnionFind:
 
 
 def neighbour_saddles(labels: np.ndarray, surface: np.ndarray) -> dict[tuple[int, int], float]:
-    """Hoechster Punkt der gemeinsamen Grenze je Nachbarpaar."""
+    """Highest point of the shared boundary, per neighbouring pair."""
     saddles: dict[tuple[int, int], float] = {}
     for dy, dx in ((0, 1), (1, 0), (1, 1), (1, -1)):
         a = labels[max(0, -dy) : labels.shape[0] - max(0, dy), max(0, -dx) : labels.shape[1] - max(0, dx)]
@@ -73,14 +72,14 @@ def neighbour_saddles(labels: np.ndarray, surface: np.ndarray) -> dict[tuple[int
 
 
 def merge_round(labels: np.ndarray, surface: np.ndarray, lab_image: np.ndarray, args) -> tuple[np.ndarray, int]:
-    """Eine Verschmelzungsrunde. Gibt (neue Labels, Anzahl Verschmelzungen)."""
+    """One merge round. Returns (new labels, number of merges)."""
     regions = {r.label: r for r in regionprops(labels, intensity_image=surface)}
     if len(regions) < 2:
         return labels, 0
 
     peaks = {label: float(r.intensity_max) for label, r in regions.items()}
     areas = {label: int(r.area) for label, r in regions.items()}
-    # Farbe je Instanz aus dem Bounding-Box-Ausschnitt, nicht ueber das ganze Bild.
+    # Colour per instance from the bounding-box crop, not over the whole image.
     colors = {
         label: np.median(lab_image[r.slice][r.image], axis=0) for label, r in regions.items()
     }
@@ -91,7 +90,7 @@ def merge_round(labels: np.ndarray, surface: np.ndarray, lab_image: np.ndarray, 
 
     union = UnionFind(int(labels.max()))
     merged = 0
-    # Nach Prominenz aufsteigend: die eindeutigsten Falschtrennungen zuerst.
+    # Ascending by prominence: the clearest false separations first.
     candidates = sorted(neighbour_saddles(labels, surface).items(), key=lambda kv: -kv[1])
 
     for (la, lb), saddle in candidates:
@@ -125,7 +124,7 @@ def merge_round(labels: np.ndarray, surface: np.ndarray, lab_image: np.ndarray, 
         lookup[label] = union.find(label)
     remapped = lookup[labels]
 
-    # Labels wieder lueckenlos durchnummerieren.
+    # Renumber the labels contiguously again.
     unique = np.unique(remapped)
     unique = unique[unique > 0]
     renumber = np.zeros(remapped.max() + 1, dtype=np.int32)
@@ -142,12 +141,12 @@ def parse_args() -> argparse.Namespace:
                         default=Path("/scratch/shared/nik/data/treeclf/depth_cache"))
 
     parser.add_argument("--split-threshold", type=float, default=0.06,
-                        help="Sattelprominenz, unterhalb derer verschmolzen wird.")
+                        help="Saddle prominence below which two instances are merged.")
     parser.add_argument("--color-threshold", type=float, default=12.0,
-                        help="Maximaler Lab-Farbabstand zweier Teile derselben Krone.")
+                        help="Maximum Lab colour distance of two parts of the same crown.")
     parser.add_argument("--crown-px", type=float, default=100.0)
     parser.add_argument("--max-area-factor", type=float, default=4.0,
-                        help="Obergrenze der verschmolzenen Flaeche, verhindert Grossblobs.")
+                        help="Ceiling on the merged area; prevents giant blobs.")
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--detrend-factor", type=float, default=3.0)
     return parser.parse_args()

@@ -1,30 +1,28 @@
-"""Echte Parallaxe aus aufeinanderfolgenden Videoframes statt geschaetzter Tiefe.
+"""Real parallax from consecutive video frames instead of estimated depth.
 
-Bisher kam die Hoeheninformation aus einem monokularen Tiefenmodell -- also aus
-einer Schaetzung, die auf einem Einzelbild nichts messen kann und in
-kontrastarmen Bereichen glatte Flaechen erfindet. Das war durchgehend die
-schwaechste Stelle der Pipeline.
+So far the height information came from a monocular depth model -- that is, from
+an estimate that can measure nothing in a single image and that invents smooth
+surfaces in low-contrast areas. That was consistently the weakest point of the
+pipeline.
 
-Die Frames eines Ordners stammen aber aus demselben Video, wenige Zehntel- bis
-Sekunden auseinander. Die Drohne hat sich dazwischen bewegt, und damit enthalten
-zwei Frames echte Parallaxe: hohe Objekte verschieben sich staerker als der
-Boden.
+The frames of a folder, however, come from the same video, a few tenths of a
+second to seconds apart. The drone moved in between, so two frames contain real
+parallax: tall objects shift more than the ground.
 
-Verfahren:
-  1. SIFT-Korrespondenzen zwischen zwei Frames.
-  2. Homographie per RANSAC. Sie beschreibt die Abbildung einer *Ebene* -- bei
-     Nadiraufnahmen im Wesentlichen den Bodenbereich -- und schluckt zugleich
-     Rotation und Zoom der Kamera.
-  3. Dichter optischer Fluss zwischen Frame A und dem homographie-entzerrten
-     Frame B.
-  4. Was jetzt an Restfluss bleibt, ist die Parallaxe. Ihr Betrag waechst mit der
-     Hoehe ueber der angepassten Ebene -- das ist ein gemessenes Ersatz-CHM.
+Method:
+  1. SIFT correspondences between two frames.
+  2. A homography via RANSAC. It describes the mapping of a *plane* -- for nadir
+     captures essentially the ground -- and at the same time absorbs the rotation
+     and zoom of the camera.
+  3. Dense optical flow between frame A and the homography-warped frame B.
+  4. Whatever residual flow remains is the parallax. Its magnitude grows with the
+     height above the fitted plane -- that is a measured surrogate CHM.
 
-Die Skala ist unbekannt (ohne Kamerakalibrierung), aber fuer Wipfelsuche und
-Watershed reicht relative Hoehe voellig -- genau wie beim monokularen Ersatz-CHM,
-nur eben gemessen statt geraten.
+The scale is unknown (no camera calibration), but for treetop finding and
+watershed a relative height is entirely sufficient -- exactly as with the
+monocular surrogate CHM, only measured instead of guessed.
 
-Beispiel:
+Example:
     python stereo_probe.py --folders 80m dense1
 """
 
@@ -41,7 +39,7 @@ from infer_species import IMAGE_SUFFIXES, REPO_ROOT
 
 
 def match_frames(gray_a: np.ndarray, gray_b: np.ndarray, max_features: int):
-    """SIFT-Korrespondenzen mit Ratio-Test."""
+    """SIFT correspondences with a ratio test."""
     sift = cv2.SIFT_create(nfeatures=max_features)
     kp_a, desc_a = sift.detectAndCompute(gray_a, None)
     kp_b, desc_b = sift.detectAndCompute(gray_b, None)
@@ -61,7 +59,7 @@ def match_frames(gray_a: np.ndarray, gray_b: np.ndarray, max_features: int):
 
 
 def parallax_map(image_a: np.ndarray, image_b: np.ndarray, args) -> tuple[np.ndarray, dict] | None:
-    """Restfluss nach Homographie-Entzerrung = Parallaxe."""
+    """Residual flow after homography warping = parallax."""
     gray_a = cv2.cvtColor(image_a, cv2.COLOR_BGR2GRAY)
     gray_b = cv2.cvtColor(image_b, cv2.COLOR_BGR2GRAY)
 
@@ -83,10 +81,10 @@ def parallax_map(image_a: np.ndarray, image_b: np.ndarray, args) -> tuple[np.nda
 
     warped = cv2.warpPerspective(gray_b, homography, (gray_a.shape[1], gray_a.shape[0]))
 
-    # Optischer Fluss auf dem entzerrten Paar: der globale Anteil ist raus, was
-    # bleibt ist hoehenbedingt. Der Restfluss betraegt nur wenige Pixel, deshalb
-    # ist Subpixelgenauigkeit entscheidend -- Farneback mit grossem Fenster
-    # verschmiert genau die Kronendetails, auf die es ankommt.
+    # Optical flow on the warped pair: the global part is gone, what remains is
+    # height-induced. The residual flow is only a few pixels, so sub-pixel
+    # accuracy is decisive -- Farneback with a large window smears exactly the
+    # crown detail that matters.
     if args.flow == "dis":
         dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
         dis.setFinestScale(args.finest_scale)
@@ -101,7 +99,7 @@ def parallax_map(image_a: np.ndarray, image_b: np.ndarray, args) -> tuple[np.nda
         )
     residual = np.linalg.norm(flow, axis=2)
 
-    # Bereiche ohne Ueberlappung (schwarz nach der Warpung) ausblenden.
+    # Mask out areas without overlap (black after the warp).
     valid = warped > 0
     residual = np.where(valid, residual, 0.0)
 
@@ -114,20 +112,20 @@ def parallax_map(image_a: np.ndarray, image_b: np.ndarray, args) -> tuple[np.nda
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
-    parser.add_argument("--folders", nargs="*", default=None, help="Ordner; None = alle.")
+    parser.add_argument("--folders", nargs="*", default=None, help="Folders; None = all of them.")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_stereo")
     parser.add_argument("--max-features", type=int, default=8000)
     parser.add_argument("--ransac-thresh", type=float, default=3.0)
     parser.add_argument("--flow", choices=("dis", "farneback"), default="dis",
-                        help="DIS ist subpixelgenauer und loest Kronendetail auf.")
-    parser.add_argument("--finest-scale", type=int, default=0, help="0 = feinste Stufe, mehr Detail.")
+                        help="DIS is more sub-pixel accurate and resolves crown detail.")
+    parser.add_argument("--finest-scale", type=int, default=0, help="0 = finest level, more detail.")
     parser.add_argument("--patch-size", type=int, default=8)
-    parser.add_argument("--winsize", type=int, default=41, help="Farneback-Fenster; gross = glatter.")
+    parser.add_argument("--winsize", type=int, default=41, help="Farneback window; large = smoother.")
     parser.add_argument("--levels", type=int, default=5)
-    parser.add_argument("--smooth", type=float, default=2.5, help="Glaettung der Parallaxenkarte.")
+    parser.add_argument("--smooth", type=float, default=2.5, help="Smoothing of the parallax map.")
     parser.add_argument("--pair-stride", type=int, default=1,
-                        help="Abstand der Paare in der Frameliste. Groesser = laengere Basislinie, "
-                             "also staerkere Parallaxe, aber weniger Ueberlappung.")
+                        help="Spacing of the pairs in the frame list. Larger = longer baseline, "
+                             "hence stronger parallax, but less overlap.")
     return parser.parse_args()
 
 

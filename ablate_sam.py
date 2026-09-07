@@ -1,16 +1,16 @@
-"""Ablation: welche SAM-Variante grenzt Baumkronen am besten ab?
+"""Ablation: which SAM variant delineates tree crowns best?
 
-Vergleicht mehrere SAM-Checkpoints unter identischen Filter- und
-Ueberlappungsregeln, damit die Unterschiede wirklich vom Modell kommen. Gemessen
-wird pro Frame: Anzahl Rohmasken, Anzahl akzeptierter Kronen, Flaechenabdeckung,
-Mediandurchmesser, Kompaktheit und Laufzeit.
+Compares several SAM checkpoints under identical filter and overlap rules, so
+that the differences really come from the model. Measured per frame: number of
+raw masks, number of accepted crowns, area coverage, median diameter,
+compactness and runtime.
 
-SAM 3 (facebook/sam3, sam3.1) ist auf HuggingFace zugangsbeschraenkt und liefert
-ohne Token HTTP 401. Sobald der Zugang da ist, laesst sich der Checkpoint einfach
-in MODELS eintragen -- SAM 3 waere konzeptionell die beste Passung, weil es per
-Textprompt ("tree") direkt auf den Begriff segmentiert statt auf ein Punktraster.
+SAM 3 (facebook/sam3, sam3.1) is access-restricted on HuggingFace and returns
+HTTP 401 without a token. Once access is granted the checkpoint can simply be
+added to MODELS -- conceptually SAM 3 is the best fit, because a text prompt
+("tree") segments on the term directly instead of on a point grid.
 
-Beispiel:
+Example:
     python ablate_sam.py --models sam_vit_huge sam2.1_large
 """
 
@@ -36,7 +36,7 @@ MODELS = {
     "sam2_large": "facebook/sam2-hiera-large",
     "sam2.1_large": "facebook/sam2.1-hiera-large",
     "sam2.1_base": "facebook/sam2.1-hiera-base-plus",
-    # "sam3": "facebook/sam3",  # gated -- Zugang noetig
+    # "sam3": "facebook/sam3",  # gated -- access required
 }
 
 DEFAULT_FRAMES = [
@@ -54,7 +54,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--models", nargs="*", default=list(MODELS))
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_ablation")
 
-    # Identisch zu den Defaults aus segment_sam.py, damit der Vergleich fair ist.
+    # Identical to the defaults in segment_sam.py, so that the comparison is fair.
     parser.add_argument("--crown-px", type=float, default=100.0)
     parser.add_argument("--min-area-factor", type=float, default=0.12)
     parser.add_argument("--max-area-factor", type=float, default=5.0)
@@ -103,7 +103,7 @@ def main() -> None:
                 pred_iou_thresh=args.pred_iou_thresh,
                 stability_score_thresh=args.stability_score_thresh,
             )
-        except Exception as error:  # gated, fehlende Architektur, OOM beim Laden
+        except Exception as error:  # gated, missing architecture, OOM while loading
             print(f"  uebersprungen: {type(error).__name__}: {str(error)[:160]}")
             continue
 

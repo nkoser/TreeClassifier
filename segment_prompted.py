@@ -1,31 +1,30 @@
-"""Tiefe als Prompt-Quelle: CHM-Wipfel steuern SAM an.
+"""Depth as a prompt source: CHM treetops steer SAM.
 
-Bisher tasten SAM 1/2 ein blindes Punktraster ab und SAM 3 sucht per Textbegriff.
-Beide muessen dabei selbst herausfinden, wo ueberhaupt ein Baum anfaengt. Die
-monokulare Tiefe weiss das besser: ein Wipfel ist ein lokales Maximum im
-Ersatz-CHM.
+So far SAM 1/2 sample a blind point grid and SAM 3 searches by a text term.
+Both have to work out for themselves where a tree even begins. The monocular
+depth knows that better: a treetop is a local maximum in the surrogate CHM.
 
-Dieses Skript kombiniert deshalb:
+This script therefore combines:
 
-  Tiefe  ->  WO ist ein Baum      (Wipfel als Prompt-Punkt, mit Prominenzpruefung)
-  SAM    ->  WO ist seine Grenze  (promptbare Segmentierung, ein Punkt pro Krone)
+  depth  ->  WHERE a tree is      (treetop as prompt point, with a prominence check)
+  SAM    ->  WHERE its border is  (promptable segmentation, one point per crown)
 
-Gegenueber segment_trees.py (Watershed auf derselben Tiefe) kommt die Grenze
-nicht aus der geglaetteten Tiefenoberflaeche, sondern aus den echten Bildkanten.
-Gegenueber segment_sam.py entfaellt das Raten, welche der vielen SAM-Masken eine
-Krone ist -- pro Wipfel wird genau eine erzeugt.
+Compared with segment_trees.py (watershed on the same depth), the boundary comes
+from real image edges rather than from the smoothed depth surface. Compared with
+segment_sam.py there is no guessing which of the many SAM masks is a crown --
+exactly one is produced per treetop.
 
-SAM liefert je Punkt drei Kandidaten unterschiedlicher Ausdehnung (Teil, Objekt,
-Kontext). Welcher davon die Krone ist, entscheidet wieder die Tiefe: das
-Wassereinzugsgebiet des Wipfels im Ersatz-CHM sagt bereits, wie weit diese Krone
-reicht. Gewaehlt wird der Kandidat mit der hoechsten Ueberdeckung zu diesem
-Becken (--select basin).
+SAM returns three candidates of different extent per point (part, object,
+context). Which of them is the crown is again decided by the depth: the
+catchment basin of the treetop in the surrogate CHM already says how far this
+crown reaches. The candidate with the highest overlap with that basin is chosen
+(--select basin).
 
-Die Alternative --select area presst jede Krone auf eine fest angenommene
-Groesse und schneidet dadurch grosse Kronen auf den hellen Kern zurueck; --select
-score nimmt SAMs eigene Bewertung, die oft auf das ganze Kronendach zielt.
+The alternative --select area forces every crown onto a fixed assumed size and
+thereby cuts large crowns back to their bright core; --select score takes SAM’s
+own rating, which often aims at the whole canopy.
 
-Beispiel:
+Example:
     python segment_prompted.py --frames 80m/frame_000297.jpg
 """
 
@@ -51,10 +50,10 @@ SAM_MODEL = "facebook/sam-vit-large"
 
 
 def find_peaks(chm: np.ndarray, args) -> tuple[np.ndarray, np.ndarray]:
-    """Wipfel [N, 2] als (x, y) und ihre Wassereinzugsgebiete als Labelbild.
+    """Treetops [N, 2] as (x, y) and their catchment basins as a label image.
 
-    Die Becken dienen nur als Groessenreferenz fuer die Kandidatenauswahl -- die
-    endgueltige Grenze zieht SAM, nicht das Watershed.
+    The basins serve only as a size reference for the candidate selection -- the
+    final boundary is drawn by SAM, not by the watershed.
     """
     smoothed = cv2.GaussianBlur(chm, (0, 0), max(0.8, args.crown_px * args.smooth_factor))
     canopy = smoothed > np.percentile(smoothed, args.gap_percentile)
@@ -73,13 +72,13 @@ def find_peaks(chm: np.ndarray, args) -> tuple[np.ndarray, np.ndarray]:
 
 @torch.no_grad()
 def prompt_sam(model, processor, image_rgb: np.ndarray, points: np.ndarray, device, chunk: int):
-    """Je Punkt drei Maskenkandidaten mit Score."""
+    """Three mask candidates with a score, per point."""
     pil = Image.fromarray(image_rgb)
     all_masks, all_scores = [], []
 
     for start in range(0, len(points), chunk):
         block = points[start : start + chunk]
-        # Form [Bild, Punktgruppe, Punkte je Maske, 2] -- eine Gruppe je Wipfel.
+        # Shape [image, point group, points per mask, 2] -- one group per treetop.
         input_points = [[[[float(x), float(y)]] for x, y in block]]
         inputs = processor(pil, input_points=input_points, return_tensors="pt").to(device)
         outputs = model(**inputs, multimask_output=True)
@@ -95,7 +94,7 @@ def prompt_sam(model, processor, image_rgb: np.ndarray, points: np.ndarray, devi
 
 def pick_candidates(masks: np.ndarray, scores: np.ndarray, basins: np.ndarray, basin_ids: np.ndarray,
                     args) -> list[tuple[np.ndarray, float, dict]]:
-    """Je Wipfel einen der drei SAM-Kandidaten waehlen."""
+    """Pick one of the three SAM candidates per treetop."""
     expected_area = np.pi * (args.crown_px / 2) ** 2
     chosen = []
 
@@ -108,8 +107,8 @@ def pick_candidates(masks: np.ndarray, scores: np.ndarray, basins: np.ndarray, b
             metrics = mask_metrics(mask)
             if metrics is None:
                 continue
-            # Grosszuegiges Fenster: es soll nur den Ausreisser "ganzes
-            # Kronendach" abfangen, nicht die Groesse vorschreiben.
+            # A generous window: it should only catch the "whole canopy" outlier,
+            # not prescribe the size.
             if not (expected_area * args.min_area_factor <= metrics["area_px"] <= expected_area * args.max_area_factor):
                 continue
             if metrics["kompaktheit"] < args.min_compactness:
@@ -132,7 +131,7 @@ def pick_candidates(masks: np.ndarray, scores: np.ndarray, basins: np.ndarray, b
 
 
 def resolve(chosen: list[tuple[np.ndarray, float, dict]], max_overlap: float):
-    """Ueberlappungen aufloesen: nach SAM-Score gierig annehmen."""
+    """Resolve overlaps: accept greedily by SAM score."""
     chosen = sorted(chosen, key=lambda item: -item[1])
     masks, records, occupied = [], [], None
 
@@ -161,18 +160,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smooth-factor", type=float, default=0.06)
     parser.add_argument("--gap-percentile", type=float, default=10.0)
     parser.add_argument("--peak-prominence", type=float, default=0.04,
-                        help="Niedriger als bei segment_trees.py: hier darf ein Wipfel schwach sein, "
-                             "die Grenze zieht ohnehin SAM.")
+                        help="Lower than in segment_trees.py: here a treetop may be weak, "
+                             "since SAM draws the boundary anyway.")
     parser.add_argument("--detrend-factor", type=float, default=3.0)
 
     parser.add_argument("--select", choices=("basin", "score", "area"), default="basin",
-                        help="Wie unter SAMs drei Kandidaten gewaehlt wird. basin: hoechste Ueberdeckung "
-                             "mit dem Wassereinzugsgebiet des Wipfels (empfohlen).")
+                        help="How to choose among SAM three candidates. basin: highest overlap "
+                             "with the catchment basin of the treetop (recommended).")
     parser.add_argument("--min-area-factor", type=float, default=0.10)
     parser.add_argument("--max-area-factor", type=float, default=5.0)
     parser.add_argument("--min-compactness", type=float, default=0.20)
     parser.add_argument("--max-overlap", type=float, default=0.30)
-    parser.add_argument("--chunk", type=int, default=24, help="Wipfel je SAM-Durchlauf.")
+    parser.add_argument("--chunk", type=int, default=24, help="Treetops per SAM pass.")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
 

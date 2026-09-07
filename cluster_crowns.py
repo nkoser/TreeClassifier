@@ -1,23 +1,22 @@
-"""Kronen nach Merkmalsvektoren clustern statt nach den kanadischen Klassen.
+"""Cluster crowns by feature vector instead of by the Canadian classes.
 
-Der Checkpoint kann nur 14 Klassen aus Quebec ausgeben -- fuer mitteleuropaeische
-Bestaende gibt es fuer die meisten Baeume gar keine richtige Antwort. Die
-Merkmale, aus denen der Head seine Entscheidung bildet, sind davon aber
-unberuehrt: sie beschreiben das Aussehen der Krone, nicht ihren kanadischen
-Namen. Baeume derselben Art sollten dort beieinander liegen, auch wenn das Modell
-keinen Namen dafuer hat.
+The checkpoint can only output 14 classes from Quebec -- for Central European
+stands there is no correct answer at all for most trees. The features from which
+the head forms its decision are untouched by that, however: they describe the
+appearance of the crown, not its Canadian name. Trees of the same species should
+lie close together there, even when the model has no name for them.
 
-Abgegriffen wird der 1536-dimensionale Vektor unmittelbar vor der letzten
-Linearschicht -- also genau das, worauf der Klassifikator seine Entscheidung
-stuetzt (Backbone-[CLS] konkateniert mit dem Token der Cross-Attention, danach
-LayerNorm). Optional stattdessen nur das Backbone-[CLS] (--features backbone),
-das nichts von der Artaufgabe weiss.
+What is tapped is the 1536-dimensional vector immediately before the last linear
+layer -- exactly what the classifier bases its decision on (backbone [CLS]
+concatenated with the cross-attention token, then LayerNorm). Optionally the
+backbone [CLS] alone instead (--features backbone), which knows nothing about
+the species task.
 
-Ausgabe sind Kontaktboegen pro Cluster: pro Gruppe ein Raster echter Kronen-
-ausschnitte. Damit laesst sich in Minuten pruefen, ob die Gruppen etwas
-Biologisches trennen -- und mit ein paar Dutzend Klicks benennen.
+The output is a contact sheet per cluster: one grid of real crown crops per
+group. That makes it possible to check in minutes whether the groups separate
+anything biological -- and to name them with a few dozen clicks.
 
-Beispiel:
+Example:
     python cluster_crowns.py --segments results_merged/s0.10_c16 --clusters 12
 """
 
@@ -49,10 +48,10 @@ THUMB = 112
 
 @torch.no_grad()
 def extract_features(model, crops: np.ndarray, batch_size: int, device, source: str) -> tuple[np.ndarray, np.ndarray]:
-    """Gibt (Merkmale [N, D], Klassenwahrscheinlichkeiten [N, C]) zurueck.
+    """Returns (features [N, D], class probabilities [N, C]).
 
-    Der Hook greift die Eingabe der letzten Linearschicht ab -- die Repraesentation,
-    auf der die Artentscheidung tatsaechlich beruht.
+    The hook taps the input of the last linear layer -- the representation the
+    species decision actually rests on.
     """
     captured: list[torch.Tensor] = []
 
@@ -82,13 +81,13 @@ def extract_features(model, crops: np.ndarray, batch_size: int, device, source: 
 
 
 def center_per_group(features: np.ndarray, groups: pd.Series) -> np.ndarray:
-    """Gruppenweise zentrieren -- einfache Batch-Korrektur.
+    """Centre per group -- a simple batch correction.
 
-    Ohne das clustern die Merkmale nach Aufnahmebedingung: jeder Flug hat eigene
-    Beleuchtung, Belichtung und Kompression, und dieser Versatz ist groesser als
-    der Unterschied zwischen zwei Baumarten. Zieht man je Ordner den Mittelwert
-    ab, bleibt nur die Variation *innerhalb* eines Fluges uebrig -- und die ist
-    der Teil, in dem die Artinformation stecken kann.
+    Without it the features cluster by capture condition: every flight has its own
+    illumination, exposure and compression, and that offset is larger than the
+    difference between two tree species. Subtracting the per-folder mean leaves
+    only the variation *within* one flight -- and that is the part in which the
+    species information can sit.
     """
     centered = features.copy()
     for value in groups.unique():
@@ -98,7 +97,7 @@ def center_per_group(features: np.ndarray, groups: pd.Series) -> np.ndarray:
 
 
 def cluster(features: np.ndarray, args) -> tuple[np.ndarray, dict]:
-    """L2-Normierung, PCA, dann k-Means oder HDBSCAN."""
+    """L2 normalisation, PCA, then k-means or HDBSCAN."""
     from sklearn.cluster import HDBSCAN, KMeans
     from sklearn.decomposition import PCA
     from sklearn.metrics import silhouette_score
@@ -121,7 +120,7 @@ def cluster(features: np.ndarray, args) -> tuple[np.ndarray, dict]:
     best_labels, best_score, scores = None, -np.inf, {}
     for k in candidates:
         labels = KMeans(n_clusters=k, n_init=10, random_state=0).fit_predict(reduced)
-        # Silhouette auf einer Stichprobe -- bei tausenden Punkten sonst teuer.
+        # Silhouette on a sample -- with thousands of points it is expensive otherwise.
         score = silhouette_score(reduced, labels, sample_size=min(3000, len(reduced)), random_state=0)
         scores[k] = round(float(score), 4)
         if score > best_score:
@@ -133,7 +132,7 @@ def cluster(features: np.ndarray, args) -> tuple[np.ndarray, dict]:
 
 
 def contact_sheet(thumbs: list[np.ndarray], columns: int, title: str) -> np.ndarray:
-    """Raster aus Kronenausschnitten, oben eine Beschriftungszeile."""
+    """Grid of crown crops, with a caption line along the top."""
     rows = int(np.ceil(len(thumbs) / columns))
     sheet = np.zeros((rows * THUMB + 30, columns * THUMB, 3), dtype=np.uint8)
     for index, thumb in enumerate(thumbs):
@@ -153,25 +152,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--categories", type=Path, default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
 
     parser.add_argument("--features", choices=("head", "backbone"), default="head",
-                        help="head: Vektor vor der Klassenschicht. backbone: reines DINOv3-[CLS].")
+                        help="head: vector before the class layer. backbone: plain DINOv3 [CLS].")
     parser.add_argument("--method", choices=("kmeans", "hdbscan"), default="kmeans")
-    parser.add_argument("--clusters", type=int, default=None, help="Feste Clusterzahl; sonst per Silhouette gewaehlt.")
+    parser.add_argument("--clusters", type=int, default=None, help="Fixed cluster count; otherwise chosen by silhouette.")
     parser.add_argument("--k-min", type=int, default=4)
     parser.add_argument("--k-max", type=int, default=16)
-    parser.add_argument("--min-cluster-size", type=int, default=25, help="Nur fuer HDBSCAN.")
+    parser.add_argument("--min-cluster-size", type=int, default=25, help="HDBSCAN only.")
     parser.add_argument("--pca", type=int, default=50)
     parser.add_argument("--center-per-folder", action="store_true",
-                        help="Merkmale je Ordner zentrieren, um den Batch-Effekt der Aufnahme zu entfernen.")
-    parser.add_argument("--only-folder", default=None, help="Nur einen Ordner clustern (ein Flug, eine Beleuchtung).")
+                        help="Centre the features per folder, to remove the batch effect of the capture.")
+    parser.add_argument("--only-folder", default=None, help="Cluster one folder only (one flight, one illumination).")
 
     parser.add_argument("--crop-factor", type=float, default=2.5)
     parser.add_argument("--crop-px", type=int, default=None,
-                        help="Feste Ausschnittsgroesse statt --crop-factor. Alle Crops erfahren dann "
-                             "denselben Skalierungsfaktor -- sonst clustern die Merkmale nach Schaerfe.")
+                        help="Fixed crop size instead of --crop-factor. Every crop then undergoes "
+                             "the same scaling -- otherwise the features cluster by sharpness.")
     parser.add_argument("--min-diameter-px", type=float, default=30.0)
     parser.add_argument("--require-full-crop", action="store_true",
-                        help="Kronen ueberspringen, deren Ausschnitt ueber den Bildrand hinausragt. "
-                             "Verhindert, dass die gespiegelte Randfortsetzung die Merkmale praegt.")
+                        help="Skip crowns whose crop extends beyond the image border. Prevents the "
+                             "mirrored border continuation from shaping the features.")
     parser.add_argument("--sheet-columns", type=int, default=12)
     parser.add_argument("--sheet-samples", type=int, default=48)
     parser.add_argument("--batch-size", type=int, default=32)

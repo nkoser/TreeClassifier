@@ -1,19 +1,19 @@
-"""Das Tiefe-Modell auf die eigenen Frames -- mit purer und feinabgestimmter Tiefe.
+"""The depth model on our own frames -- with pure and with fine-tuned depth.
 
-`queryseg.py --mode predict` liest das RGB. Das mit `--depth-only` trainierte
-Modell will aber die Tiefenkarte als Bild (dreimal uebereinandergelegt, so wie
-im Training). Dieses Skript reicht sie durch und zeichnet das Ergebnis auf das
-*Originalbild*, damit es neben den RGB-Laeufen liegt.
+`queryseg.py --mode predict` reads the RGB. The model trained with `--depth-only`
+wants the depth map as an image, though (stacked three times, as in training).
+This script passes it through and draws the result onto the *original image*, so
+that it sits next to the RGB runs.
 
-Beide Tiefenquellen aus `depthft/` laufen durch:
+Both depth sources from `depthft/` are run:
 
-  pur              Depth Pro unveraendert -- dieselbe Quelle wie im Training
-                   auf BAMFORESTS.
-  feinabgestimmt   auf FORTRESS nachtrainiert, metrisch richtig.
+  pur              Depth Pro unchanged -- the same source as in the training on
+                   BAMFORESTS.
+  feinabgestimmt   retrained on FORTRESS, metrically correct.
 
-Erwartung: kein Unterschied. Die Karten werden je Frame normiert, der Massstab
-faellt also weg -- und genau den repariert das Feinabstimmen. Bleibt die
-Kantenschaerfe, die AbsRel nicht misst.
+Expectation: no difference. The maps are normalised per frame, so the scale drops
+out -- and that is exactly what the fine-tuning repairs. What remains is the edge
+sharpness, which AbsRel does not measure.
 
     python crownseg/frames_tiefe.py --variante pur feinabgestimmt
 """
@@ -36,7 +36,7 @@ from tiling import draw_overlay, to_label_map  # noqa: E402
 
 
 def als_bild(karte: np.ndarray) -> np.ndarray:
-    """Tiefenkarte je Frame normiert und dreikanalig -- wie im Training."""
+    """Depth map normalised per frame and three-channel -- as in training."""
     gueltig = np.isfinite(karte)
     werte = karte[gueltig]
     lo, hi = np.percentile(werte, [1, 99])
@@ -63,7 +63,7 @@ def main() -> None:
     p.add_argument("--overlap", type=int, default=768)
     p.add_argument("--input-size", type=int, default=640)
     p.add_argument("--merge-iou", type=float, default=0.4,
-                   help="Schwelle beim Zusammenfuehren der Massstaebe.")
+                   help="Threshold when merging the scales.")
     p.add_argument("--arch", default="eomt")
     p.add_argument("--device", default="auto")
     args = p.parse_args()

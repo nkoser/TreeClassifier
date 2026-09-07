@@ -1,24 +1,24 @@
-"""Kronenabgrenzung ueber monokulare Tiefe + markerbasiertes Watershed.
+"""Crown delineation via monocular depth + marker-based watershed.
 
-Die Standardmethode der Forstfernerkundung fuer Einzelbaumabgrenzung arbeitet auf
-einem CHM (Canopy Height Model): Wipfel sind lokale Maxima, Kronengrenzen liegen
-in den Senken dazwischen, ein markerbasiertes Watershed zieht die Linien. Deine
-Einzelframes haben kein CHM -- aber ein monokulares Tiefenmodell liefert eine
-Ersatzoberflaeche, die dieselbe Struktur enthaelt.
+The standard method of forest remote sensing for individual tree delineation
+works on a CHM (canopy height model): treetops are local maxima, crown
+boundaries lie in the dips between them, and a marker-based watershed draws the
+lines. Our single frames have no CHM -- but a monocular depth model supplies a
+surrogate surface containing the same structure.
 
-Ablauf:
-  1. Tiefe schaetzen, invertieren (naeher an der Kamera = hoeher).
-  2. Detrend: grossskaligen Anteil abziehen. Das entfernt die Schraeglage der
-     Kamera und den Bodenplanen-Prior des Modells -- analog zu DSM minus DTM.
-  3. Glaetten, damit Blattwerk-Textur keine Scheinwipfel erzeugt.
-  4. Lokale Maxima als Wipfelmarker, Mindestabstand = halber Kronendurchmesser.
-  5. Watershed auf der invertierten Oberflaeche, begrenzt auf die Kronenmaske.
-  6. Segmente nach Flaeche und Form filtern.
+Steps:
+  1. Estimate depth, invert it (closer to the camera = higher).
+  2. Detrend: subtract the large-scale component. That removes the tilt of the
+     camera and the ground-plane prior of the model -- analogous to DSM minus DTM.
+  3. Smooth, so that foliage texture does not create phantom treetops.
+  4. Local maxima as treetop markers, minimum distance = half a crown diameter.
+  5. Watershed on the inverted surface, restricted to the canopy mask.
+  6. Filter the segments by area and shape.
 
-Die Tiefenkarten werden zwischengespeichert, damit das Nachjustieren der
-Parameter ohne erneute Modellinferenz geht.
+The depth maps are cached, so that tuning the parameters afterwards works
+without running model inference again.
 
-Beispiel:
+Example:
     python segment_trees.py --crown-px 100 --frames 80m/frame_000297.jpg
 """
 
@@ -41,12 +41,12 @@ DEPTH_MODEL = "depth-anything/Depth-Anything-V2-Metric-Outdoor-Large-hf"
 
 
 # --------------------------------------------------------------------------- #
-# Tiefenoberflaeche
+# Depth surface
 # --------------------------------------------------------------------------- #
 
 
 class DepthEstimator:
-    """Laedt das Tiefenmodell einmal und cached die Karten auf Platte."""
+    """Loads the depth model once and caches the maps on disk."""
 
     def __init__(self, model_id: str, device, cache_dir: Path | None) -> None:
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
@@ -77,35 +77,35 @@ class DepthEstimator:
 
 
 def build_pseudo_chm(depth: np.ndarray, crown_px: float, detrend_factor: float) -> np.ndarray:
-    """Tiefe -> Ersatz-CHM: invertiert, grossskaliger Trend entfernt."""
+    """Depth -> surrogate CHM: inverted, large-scale trend removed."""
     surface = -depth.astype(np.float32)
     trend = cv2.GaussianBlur(surface, (0, 0), max(1.0, crown_px * detrend_factor))
     return surface - trend
 
 
 # --------------------------------------------------------------------------- #
-# Abgrenzung
+# Delineation
 # --------------------------------------------------------------------------- #
 
 
 def delineate(
     chm: np.ndarray, crown_px: float, gap_percentile: float, smooth_factor: float, prominence: float
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Watershed-Abgrenzung mit Prominenzpruefung der Wipfel.
+    """Watershed delineation with a prominence check on the treetops.
 
-    Watershed ist eine Partition, kein Detektor: es zerlegt die Maske in genau so
-    viele Teile wie Marker hineingehen. Ein reines lokales Maximum ist deshalb ein
-    zu schwaches Kriterium -- in flachen Bereichen erzeugt Rauschen beliebig viele
-    davon und damit Pseudo-Kronen. h_maxima verlangt stattdessen, dass sich ein
-    Wipfel um mindestens `prominence` ueber seine Umgebung erhebt, bevor er zaehlt.
+    Watershed is a partition, not a detector: it divides the mask into exactly as
+    many parts as markers go into it. A pure local maximum is therefore far too
+    weak a criterion -- in flat areas noise creates arbitrarily many of them and
+    hence pseudo-crowns. h_maxima instead demands that a treetop rise at least
+    `prominence` above its surroundings before it counts.
     """
     smoothed = cv2.GaussianBlur(chm, (0, 0), max(0.8, crown_px * smooth_factor))
 
-    # Kronenmaske: die tiefsten Bereiche sind Luecken, Boden oder Schatten.
+    # Canopy mask: the lowest areas are gaps, ground or shadow.
     canopy = smoothed > np.percentile(smoothed, gap_percentile)
 
-    # Prominenzschwelle relativ zur robusten Spannweite der Oberflaeche, damit sie
-    # nicht von der willkuerlichen Skala des Tiefenmodells abhaengt.
+    # Prominence threshold relative to the robust range of the surface, so that it
+    # does not depend on the arbitrary scale of the depth model.
     low, high = np.percentile(smoothed[canopy], [5, 95])
     height_threshold = max(1e-6, (high - low) * prominence)
 
@@ -120,7 +120,7 @@ def delineate(
 
 
 def crowns_to_frame(labels: np.ndarray, chm: np.ndarray, crown_px: float, args) -> pd.DataFrame:
-    """Segmente vermessen und nach Flaeche/Form filtern."""
+    """Measure the segments and filter them by area and shape."""
     expected_area = np.pi * (crown_px / 2) ** 2
     min_area = expected_area * args.min_area_factor
     max_area = expected_area * args.max_area_factor
@@ -129,8 +129,8 @@ def crowns_to_frame(labels: np.ndarray, chm: np.ndarray, crown_px: float, args) 
     for region in regionprops(labels, intensity_image=chm):
         if not (min_area <= region.area <= max_area):
             continue
-        # Sehr langgezogene Segmente sind meist zwei verschmolzene Kronen oder
-        # ein Schattenband, keine Einzelkrone.
+        # Very elongated segments are usually two merged crowns or a shadow band,
+        # not a single crown.
         if region.axis_major_length > 0 and (
             region.axis_minor_length / region.axis_major_length < args.min_axis_ratio
         ):
@@ -159,7 +159,7 @@ def crowns_to_frame(labels: np.ndarray, chm: np.ndarray, crown_px: float, args) 
 
 
 # --------------------------------------------------------------------------- #
-# Visualisierung
+# Visualisation
 # --------------------------------------------------------------------------- #
 
 
@@ -167,14 +167,14 @@ def draw_crowns(image_bgr: np.ndarray, labels: np.ndarray, crowns: pd.DataFrame,
     canvas = image_bgr.copy()
     keep = set(crowns["label"].tolist())
 
-    # Grenzen der behaltenen Segmente als Linien zeichnen.
+    # Draw the boundaries of the kept segments as lines.
     kept_mask = np.isin(labels, list(keep)) if keep else np.zeros_like(labels, dtype=bool)
     for label in keep:
         mask = (labels == label).astype(np.uint8)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         cv2.drawContours(canvas, contours, -1, (80, 230, 120), 2)
 
-    # Verworfene Segmente dezent in Rot, damit man den Filter beurteilen kann.
+    # Discarded segments discreetly in red, so the filter can be judged.
     discarded = (labels > 0) & ~kept_mask
     canvas[discarded] = (0.65 * canvas[discarded] + 0.35 * np.array([60, 60, 200])).astype(np.uint8)
 
@@ -192,27 +192,27 @@ def draw_crowns(image_bgr: np.ndarray, labels: np.ndarray, crowns: pd.DataFrame,
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
-    parser.add_argument("--frames", nargs="*", default=None, help="Pfade relativ zu --input; None = alle.")
+    parser.add_argument("--frames", nargs="*", default=None, help="Paths relative to --input; None = all.")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_segment")
     parser.add_argument("--depth-cache", type=Path, default=Path("/scratch/shared") / "nik" / "data" / "treeclf" / "depth_cache")
 
     parser.add_argument("--crown-px", type=float, default=100.0,
-                        help="Erwarteter Kronendurchmesser in Pixeln. Steuert alle Skalen.")
+                        help="Expected crown diameter in pixels. Drives every scale.")
     parser.add_argument("--detrend-factor", type=float, default=3.0,
-                        help="Sigma des Trendfilters als Vielfaches von --crown-px.")
+                        help="Sigma of the trend filter as a multiple of --crown-px.")
     parser.add_argument("--smooth-factor", type=float, default=0.06,
-                        help="Sigma der Glaettung als Vielfaches von --crown-px.")
+                        help="Sigma of the smoothing as a multiple of --crown-px.")
     parser.add_argument("--peak-prominence", type=float, default=0.08,
-                        help="Wie weit sich ein Wipfel ueber seine Umgebung erheben muss, "
-                             "als Anteil der 5-95-Perzentil-Spannweite des Ersatz-CHM.")
+                        help="How far a treetop has to rise above its surroundings, "
+                             "as a fraction of the 5-95 percentile range of the surrogate CHM.")
     parser.add_argument("--gap-percentile", type=float, default=10.0,
-                        help="Perzentil der Oberflaeche, unterhalb dessen als Luecke/Boden verworfen wird.")
+                        help="Surface percentile below which a pixel counts as gap/ground.")
     parser.add_argument("--min-area-factor", type=float, default=0.15)
     parser.add_argument("--max-area-factor", type=float, default=4.0)
     parser.add_argument("--min-axis-ratio", type=float, default=0.35)
 
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
-    parser.add_argument("--save-chm", action="store_true", help="Ersatz-CHM zusaetzlich als Bild speichern.")
+    parser.add_argument("--save-chm", action="store_true", help="Also save the surrogate CHM as an image.")
     return parser.parse_args()
 
 
@@ -249,7 +249,7 @@ def main() -> None:
         )
         crowns = crowns_to_frame(labels, chm, args.crown_px, args)
 
-        # Wie viel des segmentierten Kronendachs ueberlebt den Filter?
+        # How much of the segmented canopy survives the filter?
         segmented = labels > 0
         kept = np.isin(labels, crowns["label"].to_numpy()) if len(crowns) else np.zeros_like(segmented)
         abdeckung = kept.sum() / max(1, segmented.sum())

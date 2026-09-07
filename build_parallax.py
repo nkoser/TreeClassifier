@@ -1,26 +1,26 @@
-"""Gemessene Hoehenkarte je Frame aus der Parallaxe aller Partnerframes.
+"""One measured height map per frame, from the parallax of all partner frames.
 
-stereo_probe.py rechnet die Parallaxe eines einzelnen Framepaars. Fuer die
-Pipeline braucht es aber je Frame *eine* Karte in dessen eigenen Koordinaten,
-und die soll moeglichst rauscharm sein.
+stereo_probe.py computes the parallax of a single frame pair. The pipeline,
+however, needs *one* map per frame in the coordinates of that frame, and it
+should be as free of noise as possible.
 
-Deshalb hier: fuer jeden Frame A werden alle anderen Frames desselben Ordners als
-Partner durchprobiert und die Ergebnisse gemittelt. Zwei Punkte sind dabei
-wesentlich:
+Hence this script: for every frame A, all other frames of the same folder are
+tried as partners and the results are averaged. Two points are essential in
+doing so:
 
-  Basislinie normieren  Der Restfluss waechst proportional zur Kamerabewegung.
-                        Ohne Normierung dominiert das Paar mit der laengsten
-                        Basislinie den Mittelwert. Geteilt wird deshalb durch die
-                        mediane Verschiebung des Paars -- danach sind alle Karten
-                        auf derselben (weiterhin unbekannten) Hoehenskala.
-  Paare aussortieren    Wo die Drohne schwebte, gibt es keine Parallaxe. Paare
-                        unterhalb einer Mindestverschiebung liefern nur Rauschen
-                        und werden verworfen.
+  normalise baseline   The residual flow grows proportionally to the camera
+                       motion. Without normalisation the pair with the longest
+                       baseline dominates the mean. So each map is divided by
+                       the median displacement of its pair -- afterwards all
+                       maps are on the same (still unknown) height scale.
+  discard pairs        Where the drone hovered there is no parallax. Pairs
+                       below a minimum displacement return only noise and are
+                       discarded.
 
-Ergebnis ist ein Cache im selben Format wie der Tiefencache, sodass die
-bestehenden Skripte ihn direkt verwenden koennen.
+The result is a cache in the same format as the depth cache, so that the
+existing scripts can use it directly.
 
-Beispiel:
+Example:
     python build_parallax.py --out /scratch/shared/nik/data/treeclf/parallax_cache
 """
 
@@ -46,7 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--preview", type=Path, default=REPO_ROOT / "results_parallax")
 
     parser.add_argument("--min-displacement", type=float, default=15.0,
-                        help="Mindestverschiebung in px. Darunter schwebte die Drohne -- kein Signal.")
+                        help="Minimum displacement in px. Below it the drone hovered -- no signal.")
     parser.add_argument("--min-overlap", type=float, default=0.6)
     parser.add_argument("--max-features", type=int, default=8000)
     parser.add_argument("--ransac-thresh", type=float, default=3.0)
@@ -101,8 +101,8 @@ def main() -> None:
                 ):
                     continue
 
-                # Auf Basislinie 1 normieren, damit lange und kurze Paare gleich
-                # gewichtet in den Mittelwert eingehen.
+                # Normalise to baseline 1, so that long and short pairs enter
+                # the mean with equal weight.
                 accumulated.append(residual / stats["verschiebung_median_px"])
                 used.append((partner.stem, stats["verschiebung_median_px"], stats["ueberlappung"]))
 

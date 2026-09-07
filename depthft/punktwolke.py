@@ -1,34 +1,33 @@
-"""Aus den Tiefenkarten Punktwolken machen -- am Boden verankert, nicht an der Kamera.
+"""Turn the depth maps into point clouds -- anchored to the ground, not the camera.
 
-Eine Tiefenkarte ist bereits 2.5D: zu jedem Pixel ein Abstand. Der Weg nach 3D
-ist die Umkehrung der Abbildungsgleichung,
+A depth map is already 2.5D: one distance per pixel. The route to 3D is the
+inverse of the projection equation,
 
-    X = (u - cx) * d / f_px        Y = -(v - cy) * d / f_px        Z = Boden - d
+    X = (u - cx) * d / f_px        Y = -(v - cy) * d / f_px        Z = ground - d
 
-wobei `f_px = k * Bildbreite` und `k = 0.5 / tan(HFOV/2)`.
+where `f_px = k * image width` and `k = 0.5 / tan(HFOV/2)`.
 
-**Warum der Bildwinkel die Wolke verzerrt, aber nicht so, wie man denkt.** In X
-und Y kuerzt er sich heraus: `d` ist proportional zu `k`, `f_px` ebenfalls. Ist
-der angenommene Bildwinkel falsch, bleiben Kronendurchmesser also richtig --
-allein die Hoehe wird gestreckt oder gestaucht. Baeume werden zu spitz oder zu
-flach, nicht zu breit.
+**Why the field of view distorts the cloud, but not the way you would think.** In
+X and Y it cancels out: `d` is proportional to `k`, and so is `f_px`. If the
+assumed field of view is wrong, crown diameters therefore stay correct -- only
+the height is stretched or compressed. Trees become too pointed or too flat, not
+too wide.
 
-**Warum Punkte an Kronenraendern verworfen werden.** Dort springt die Tiefe von
-der Krone auf den Boden. Die Tiefenkarte ist aber stetig und legt Zwischenwerte
-dazwischen -- in 3D werden daraus Punkte, die frei im Raum haengen, und Baeume
-laufen nach unten in Zapfen aus, statt aufzusetzen. `--max-neigung` wirft sie
-heraus.
+**Why points at crown edges are discarded.** There the depth jumps from the crown
+to the ground. The depth map is continuous, though, and puts intermediate values
+in between -- in 3D those become points hanging free in space, and trees taper
+downwards into cones instead of touching down. `--max-neigung` throws them out.
 
-**Warum der Boden nicht aus der Flughoehe kommt.** Man koennte `Z = H - d`
-rechnen. Dann haengt aber alles an einer Zahl, die oft geschaetzt ist, und
-geneigtes Gelaende kippt die ganze Wolke. Stattdessen wird der Boden aus den
-Daten geholt, wie in der Forstpraxis mit LiDAR: die Tiefenkarte in Kacheln
-teilen, je Kachel die tiefste Stelle als Bodenkandidat nehmen, glaetten, und die
-Wolke darauf normalisieren. Das nimmt Gelaendeneigung mit.
+**Why the ground does not come from the flight altitude.** One could compute
+`Z = H - d`. But then everything hangs on a number that is often estimated, and
+sloping terrain tilts the whole cloud. Instead the ground is taken from the data,
+as in forestry practice with LiDAR: divide the depth map into tiles, take the
+deepest point per tile as a ground candidate, smooth, and normalise the cloud
+onto it. That carries terrain slope along.
 
-Ein Rest bleibt: im geschlossenen Kronendach ist die tiefste **sichtbare**
-Stelle nicht der Boden. Aus den FORTRESS-Hoehenmodellen gemessen liegt sie im
-Median bei 0.917 der Flughoehe. `--boden-faktor` rechnet das heraus.
+One residual remains: in a closed canopy the deepest **visible** point is not the
+ground. Measured from the FORTRESS height models it lies at 0.917 of the flight
+altitude at the median. `--boden-faktor` factors that out.
 
     python depthft/punktwolke.py --frames 80m/frame_000297.jpg
     python depthft/punktwolke.py --alle --format ply las --schritt 2
@@ -51,7 +50,7 @@ import inferenz  # noqa: E402
 
 
 def schreibe_ply(pfad: Path, xyz: np.ndarray, rgb: np.ndarray) -> None:
-    """Binaeres PLY mit Farbe -- lesen CloudCompare, MeshLab, Blender, QGIS."""
+    """Binary PLY with colour -- read by CloudCompare, MeshLab, Blender, QGIS."""
     kopf = (
         "ply\n"
         "format binary_little_endian 1.0\n"
@@ -72,11 +71,11 @@ def schreibe_ply(pfad: Path, xyz: np.ndarray, rgb: np.ndarray) -> None:
 
 def schreibe_las(pfad: Path, xyz: np.ndarray, rgb: np.ndarray, klasse: np.ndarray | None = None,
                  skala: float = 0.001) -> None:
-    """LAS 1.2, Punktformat 2 (mit Farbe) -- fuer lidR, LAStools, CloudCompare.
+    """LAS 1.2, point format 2 (with colour) -- for lidR, LAStools, CloudCompare.
 
-    Von Hand geschrieben, weil im Container keine LAS-Bibliothek liegt. Die
-    Koordinaten werden als int32 in Vielfachen von `skala` abgelegt; bei 1 mm
-    reicht der Wertebereich fuer gut 2000 km, also mehr als genug.
+    Written by hand because there is no LAS library in the container. The
+    coordinates are stored as int32 in multiples of `skala`; at 1 mm the value
+    range covers a good 2000 km, i.e. more than enough.
     """
     mins = xyz.min(axis=0) if len(xyz) else np.zeros(3)
     maxs = xyz.max(axis=0) if len(xyz) else np.zeros(3)
@@ -87,9 +86,9 @@ def schreibe_las(pfad: Path, xyz: np.ndarray, rgb: np.ndarray, klasse: np.ndarra
         ("flags", "u1"), ("klasse", "u1"), ("winkel", "i1"), ("nutzer", "u1"),
         ("quelle", "<u2"), ("r", "<u2"), ("g", "<u2"), ("b", "<u2")])
     punkte["x"], punkte["y"], punkte["z"] = ganz[:, 0], ganz[:, 1], ganz[:, 2]
-    punkte["flags"] = 1                                    # Rueckgabe 1 von 1
-    punkte["klasse"] = 1 if klasse is None else klasse     # 1 = unklassifiziert
-    # LAS erwartet 16 Bit je Farbkanal; 8-Bit-Werte werden hochskaliert.
+    punkte["flags"] = 1                                    # return 1 of 1
+    punkte["klasse"] = 1 if klasse is None else klasse     # 1 = unclassified
+    # LAS expects 16 bits per colour channel; 8-bit values are scaled up.
     punkte["r"], punkte["g"], punkte["b"] = (rgb[:, 0].astype(np.uint16) * 257,
                                              rgb[:, 1].astype(np.uint16) * 257,
                                              rgb[:, 2].astype(np.uint16) * 257)
@@ -113,13 +112,12 @@ def schreibe_las(pfad: Path, xyz: np.ndarray, rgb: np.ndarray, klasse: np.ndarra
 
 def kamera_pruefen(bild, pfad, erwartete_breite: int = 1920, erwartetes_verhaeltnis: float = 16 / 9,
                    toleranz: float = 0.02) -> str | None:
-    """Warnen, wenn ein Bild nicht aus derselben Kamera stammen kann.
+    """Warn when an image cannot come from the same camera.
 
-    Der vorgegebene Bildwinkel gilt fuer die Frames der Drohne, 1920x1080. Ein
-    Bildschirmfoto oder ein zugeschnittenes Bild hat einen anderen Ausschnitt und
-    damit einen anderen Bildwinkel -- die Tiefen waeren um einen unbekannten
-    Faktor falsch, ohne dass man es dem Ergebnis ansieht. Im Ordner `urban`
-    lagen genau solche Dateien.
+    The supplied field of view holds for the drone frames, 1920x1080. A screenshot
+    or a cropped image has a different framing and therefore a different field of
+    view -- the depths would be wrong by an unknown factor without it showing in
+    the result. The folder `urban` contained exactly such files.
     """
     h, w = bild.shape[:2]
     verhaeltnis = w / max(h, 1)
@@ -131,54 +129,53 @@ def kamera_pruefen(bild, pfad, erwartete_breite: int = 1920, erwartetes_verhaelt
 
 
 def kantenmaske(tiefe: np.ndarray, gsd_m: float, max_neigung: float) -> np.ndarray:
-    """Punkte an Tiefenspruengen verwerfen -- die gibt es in Wirklichkeit nicht.
+    """Discard points at depth jumps -- in reality they do not exist.
 
-    Am Kronenrand springt die Tiefe von der Krone auf den Boden. Die Tiefenkarte
-    ist aber stetig, also legt sie Zwischenwerte dazwischen, und beim Aufspannen
-    in 3D werden daraus Punkte, die frei im Raum haengen -- Baeume laufen nach
-    unten in Zapfen aus, statt aufzusetzen. In der Literatur heissen sie
-    *flying pixels*.
+    At a crown edge the depth jumps from the crown to the ground. The depth map is
+    continuous, though, so it places intermediate values in between, and when
+    spanned into 3D those become points hanging free in space -- trees taper
+    downwards into cones instead of touching down. In the literature they are
+    called *flying pixels*.
 
-    Erkannt werden sie am Gefaelle: `max_neigung` ist das Verhaeltnis von
-    Tiefenaenderung zu Bodenaufloesung. 8 heisst, dass ein Hang steiler als
-    8:1 (rund 83 Grad) nicht mehr als Oberflaeche durchgeht.
+    They are detected by their slope: `max_neigung` is the ratio of depth change
+    to ground sampling. 8 means a slope steeper than 8:1 (about 83 degrees) no
+    longer passes as a surface.
     """
     dy, dx = np.gradient(tiefe.astype(np.float32))
     gefaelle = np.hypot(dx, dy) / max(gsd_m, 1e-6)
     steil = gefaelle > max_neigung
-    # Einen Pixel weiten: der Sprung selbst ist scharf, der Schleier sitzt daneben.
+    # Dilate by one pixel: the jump itself is sharp, the veil sits beside it.
     return cv2.dilate(steil.astype(np.uint8), np.ones((3, 3), np.uint8)) == 0
 
 
 def bodenmodell(tiefe: np.ndarray, gsd_m: float, kachel_m: float, perzentil: float,
                 boden_faktor: float) -> np.ndarray:
-    """Gelaendemodell aus der Tiefenkarte -- je Kachel die tiefste Stelle.
+    """Terrain model from the depth map -- the deepest point per tile.
 
-    Dasselbe Verfahren, mit dem aus einer LiDAR-Wolke ein Gelaendemodell wird:
-    Bodenkandidaten je Kachel, dann glaetten. Mit zwei Bedingungen, ohne die es
-    schiefgeht:
+    The same method by which a terrain model is made from a LiDAR cloud: ground
+    candidates per tile, then smoothing. With two conditions, without which it
+    goes wrong:
 
-    **Das Modell darf nirgends ueber der beobachteten Oberflaeche liegen.** Sonst
-    landen Punkte unter dem Boden -- gemessen bis 29 m tief in einem Bestand mit
-    starker Hangneigung, wo die geglaettete Flaeche der echten nicht folgte. Der
-    abschliessende `maximum`-Schritt erzwingt es: wo die Oberflaeche tiefer liegt
-    als die Schaetzung, ist sie selbst der Boden.
+    **The model must nowhere lie above the observed surface.** Otherwise points
+    end up below the ground -- measured up to 29 m deep in a stand with a strong
+    slope, where the smoothed surface did not follow the real one. The final
+    `maximum` step enforces it: where the surface lies deeper than the estimate,
+    it is itself the ground.
 
-    **Die Glaettung darf die Hangneigung nicht wegbuegeln.** Sie laeuft deshalb
-    ueber knapp eine Kachel, nicht ueber mehrere.
+    **The smoothing must not iron out the slope.** It therefore runs over just
+    under one tile, not over several.
 
-    Ein Rest bleibt: im geschlossenen Kronendach ist die tiefste **sichtbare**
-    Stelle nicht der Boden. Aus den FORTRESS-Hoehenmodellen gemessen liegt sie im
-    Median bei 0.917 der Flughoehe, was `boden_faktor` ausgleicht. Derselbe Wert
-    kommt heraus, wenn man ihn stattdessen gegen die Wahrheit optimiert
-    (`hoehe_pruefen.py`) -- zwei unabhaengige Wege zum selben Faktor.
+    One residual remains: in a closed canopy the deepest **visible** point is not
+    the ground. Measured from the FORTRESS height models it lies at 0.917 of the
+    flight altitude at the median, which `boden_faktor` compensates. The same
+    value comes out if it is instead optimised against the truth
+    (`hoehe_pruefen.py`) -- two independent routes to the same factor.
 
-    Gemessen gegen das nDSM der Testgebiete liegt dieser Weg zur Hoehe bei
-    MAE 5.64 m und ist damit **besser als die Rechnung aus bekannter Flughoehe**
-    (7.46 m): `Z = H - d` kann Hangneigung nicht abbilden, ein Gelaendemodell
-    schon.
+    Measured against the nDSM of the test sites, this route to height gives
+    MAE 5.64 m and is therefore **better than the calculation from a known flight
+    altitude** (7.46 m): `Z = H - d` cannot represent slope, a terrain model can.
     """
-    # Einzelne ausreissende Pixel wuerden den Boden lokal nach unten reissen.
+    # Individual outlying pixels would pull the ground down locally.
     tiefe_r = cv2.medianBlur(tiefe.astype(np.float32), 5)
 
     kachel_px = max(8, int(round(kachel_m / max(gsd_m, 1e-6))))
@@ -195,7 +192,7 @@ def bodenmodell(tiefe: np.ndarray, gsd_m: float, kachel_m: float, perzentil: flo
     fein = cv2.resize(grob, (w, h), interpolation=cv2.INTER_LINEAR)
     fein = cv2.GaussianBlur(fein, (0, 0), max(2.0, kachel_px * 0.4))
 
-    # Der entscheidende Schritt: nie ueber der Oberflaeche.
+    # The decisive step: never above the surface.
     boden = np.maximum(fein, tiefe_r)
     return boden / max(boden_faktor, 1e-6)
 
@@ -207,37 +204,37 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--karten", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_karten"),
-                        help="Vorgerechnete Tiefenkarten; fehlen sie, wird das Modell geladen.")
+                        help="Precomputed depth maps; if missing, the model is loaded.")
     parser.add_argument("--ft", type=Path,
                         default=Path("/scratch/shared/nik/runs/depthft/bestes"))
     parser.add_argument("--modellart", default="tiefe", choices=("tiefe", "hoehe"),
-                        help="tiefe: ueber die Tiefe, mit Gelaendemodell. hoehe: gibt Meter "
-                             "unmittelbar aus, unterscheidet aber nicht zwischen Bestaenden.")
+                        help="tiefe: via the depth, with a terrain model. hoehe: outputs metres "
+                             "directly, but does not distinguish between stands.")
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_wolken"))
     parser.add_argument("--frames", nargs="*", default=None, metavar="ORDNER/DATEI",
-                        help="Einzelne Frames; Vorgabe ist einer je Ordner.")
-    parser.add_argument("--alle", action="store_true", help="Alle Frames statt einer je Ordner.")
+                        help="Individual frames; the default is one per folder.")
+    parser.add_argument("--alle", action="store_true", help="Every frame instead of one per folder.")
     parser.add_argument("--format", nargs="*", default=["ply"], choices=("ply", "las"))
     parser.add_argument("--hfov-deg", type=float, default=48.0)
     parser.add_argument("--schritt", type=int, default=2,
-                        help="Jedes n-te Pixel. 1 gibt gut 2 Millionen Punkte je Frame.")
+                        help="Every n-th pixel. 1 gives a good 2 million points per frame.")
     parser.add_argument("--boden", default="modell", choices=("modell", "flughoehe", "roh"),
-                        help="modell: Gelaendemodell aus den Daten. flughoehe: Z = H - d. "
-                             "roh: Z = -d, Nullpunkt an der Kamera.")
+                        help="modell: terrain model from the data. flughoehe: Z = H - d. "
+                             "roh: Z = -d, with the origin at the camera.")
     parser.add_argument("--kachel-m", type=float, default=35.0,
-                        help="Kachelgroesse fuer das Gelaendemodell. Kleiner folgt der "
-                             "Hangneigung besser, groesser ist ruhiger. 35 m ist auf den "
-                             "FORTRESS-Testgebieten gemessen der beste Kompromiss: MAE 5.64 m "
-                             "bei praktisch keinem Versatz.")
+                        help="Tile size for the terrain model. Smaller follows the slope "
+                             "better, larger is calmer. Measured on the FORTRESS test sites, "
+                             "35 m is the best compromise: MAE 5.64 m at practically no "
+                             "offset.")
     parser.add_argument("--boden-perzentil", type=float, default=97.0)
     parser.add_argument("--boden-faktor", type=float, default=0.917,
-                        help="Tiefste sichtbare Stelle im Verhaeltnis zum echten Boden.")
+                        help="Deepest visible point relative to the real ground.")
     parser.add_argument("--max-neigung", type=float, default=8.0,
-                        help="Punkte an Tiefenspruengen verwerfen. Verhaeltnis von "
-                             "Tiefenaenderung zu Bodenaufloesung; 0 schaltet es ab.")
+                        help="Discard points at depth jumps. Ratio of depth change to "
+                             "ground sampling; 0 turns it off.")
     parser.add_argument("--min-hoehe", type=float, default=None,
-                        help="Punkte darunter verwerfen, z.B. 2 laesst nur Vegetation stehen.")
+                        help="Discard points below this, e.g. 2 keeps only vegetation.")
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE",
                         default=["dense=51", "dense1=69", "mixed=92", "mixed1=103",
                                  "pines=60", "urban=120"])
@@ -290,8 +287,8 @@ def main() -> None:
         f_px = k * w
         gsd = H / f_px
 
-        # Sagt das Modell die Hoehe unmittelbar vorher, braucht es kein
-        # Gelaendemodell -- der Bodenbezug steckt schon in der Vorhersage.
+        # If the model predicts the height directly, no terrain model is needed --
+        # the ground reference is already inside the prediction.
         if hoehe_direkt is not None:
             boden = tiefe + hoehe_direkt
         elif args.boden == "modell":
@@ -304,8 +301,8 @@ def main() -> None:
         s = max(1, args.schritt)
         v, u = np.mgrid[0:h:s, 0:w:s].astype(np.float32)
         d = tiefe[::s, ::s]
-        # X und Y sind unabhaengig vom angenommenen Bildwinkel: d ist proportional
-        # zu k, f_px ebenfalls, beides kuerzt sich hier heraus.
+        # X and Y are independent of the assumed field of view: d is proportional
+        # to k and so is f_px, so both cancel out here.
         X = (u - (w - 1) / 2.0) * d / f_px
         Y = -(v - (h - 1) / 2.0) * d / f_px
         Z = boden[::s, ::s] - d

@@ -1,24 +1,23 @@
-"""Instanzen aus dem Bild, Korrektur aus der Tiefe -- in beide Richtungen.
+"""Instances from the image, corrections from the depth -- in both directions.
 
-SAM 3 liefert die Instanzen mit der hoechsten Abdeckung, setzt die Grenzen aber
-allein nach Bildkanten. Die monokulare Tiefe kennt dafuer die Hoehenstruktur und
-kann zwei Fehlerarten reparieren, die SAM aus dem Bild allein nicht sieht:
+SAM 3 delivers the instances with the highest coverage, but sets the boundaries
+from image edges alone. The monocular depth, on the other hand, knows the height
+structure and can repair two kinds of error SAM cannot see from the image alone:
 
-  TEILEN        Eine Instanz enthaelt zwei prominente Wipfel mit einer Kerbe
-                dazwischen -> zwei Baeume wurden zusammengefasst. Getrennt wird am
-                Sattel, per Watershed innerhalb der Instanz.
-  VERSCHMELZEN  Zwei Nachbarinstanzen haben keinen Sattel zwischen sich und
-                dieselbe Farbe -> ein Baum wurde zerschnitten.
+  SPLIT         One instance contains two prominent treetops with a notch
+                between them -> two trees were merged. They are separated at the
+                saddle, by a watershed inside the instance.
+  MERGE         Two neighbouring instances have no saddle between them and the
+                same colour -> one tree was cut apart.
 
-Reihenfolge: erst teilen, dann verschmelzen. Falsch zusammengefasste Blobs werden
-also zuerst aufgebrochen, danach die Bruchstuecke wieder korrekt gruppiert.
+Order: split first, then merge. Wrongly merged blobs are broken up first, and
+the fragments are then grouped correctly again.
 
-Entscheidend beim Teilen ist, dass die Prominenz **innerhalb der jeweiligen
-Instanz** gemessen wird, nicht global: eine niedrige Krone hat einen kleineren
-Hoehenumfang als eine hohe, und ein global gesetzter Schwellwert wuerde bei ihr
-nie ausloesen.
+What matters when splitting is that the prominence is measured **within the
+respective instance**, not globally: a low crown has a smaller height range than
+a tall one, and a globally set threshold would never trigger on it.
 
-Beispiel:
+Example:
     python refine_crowns.py --segments results_sam3/multiskala --out results_refined
 """
 
@@ -41,12 +40,12 @@ from segment_trees import build_pseudo_chm
 
 
 def load_surface(folder: str, stem: str, args) -> np.ndarray | None:
-    """Hoehenoberflaeche laden: gemessene Parallaxe oder geschaetzte Tiefe.
+    """Load the height surface: measured parallax or estimated depth.
 
-    Die Parallaxe ist bereits Hoehe ueber der angepassten Ebene und muss deshalb
-    nicht invertiert werden -- anders als die Tiefe, bei der naeher an der Kamera
-    hoeher bedeutet. Der grossskalige Trend wird in beiden Faellen abgezogen: die
-    Homographie-Ebene trifft den Boden nur naeherungsweise.
+    The parallax is already a height above the fitted plane and therefore needs no
+    inversion -- unlike depth, where closer to the camera means higher. The
+    large-scale trend is subtracted in both cases: the homography plane only
+    approximates the ground.
     """
     if args.surface == "parallax":
         path = args.parallax_cache / f"{folder}__{stem}.npy"
@@ -63,12 +62,12 @@ def load_surface(folder: str, stem: str, args) -> np.ndarray | None:
 
 
 def split_instance(mask: np.ndarray, surface: np.ndarray, args) -> list[np.ndarray] | None:
-    """Eine Instanz an inneren Saetteln teilen. None, wenn nichts zu teilen ist."""
+    """Split one instance at internal saddles. None if there is nothing to split."""
     values = surface[mask]
     if values.size < 50:
         return None
 
-    # Prominenz relativ zum Hoehenumfang DIESER Instanz.
+    # Prominence relative to the height range of THIS instance.
     low, high = np.percentile(values, [5, 95])
     span = high - low
     if span <= 0:
@@ -89,7 +88,7 @@ def split_instance(mask: np.ndarray, surface: np.ndarray, args) -> list[np.ndarr
         piece = parts == region.label
         metrics = mask_metrics(piece)
         if metrics is None or metrics["area_px"] < min_part:
-            return None  # Ein zu kleines Bruchstueck -> Teilung verwerfen.
+            return None  # a fragment that is too small -> discard the split
         if metrics["kompaktheit"] < args.min_compactness:
             return None
         pieces.append(piece)
@@ -98,13 +97,13 @@ def split_instance(mask: np.ndarray, surface: np.ndarray, args) -> list[np.ndarr
 
 
 def split_round(labels: np.ndarray, surface: np.ndarray, args) -> tuple[np.ndarray, int]:
-    """Alle Instanzen einmal auf Teilbarkeit pruefen."""
+    """Check every instance once for splittability."""
     result = np.zeros_like(labels)
     next_label, splits = 1, 0
 
     for region in regionprops(labels):
-        # Nur im Bounding-Box-Ausschnitt arbeiten -- sonst kostet jede Instanz
-        # eine Vollbildmaske.
+        # Work only within the bounding-box crop -- otherwise every instance costs
+        # a full-frame mask.
         window = region.slice
         mask = region.image
         pieces = split_instance(mask, surface[window], args)
@@ -133,24 +132,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--parallax-cache", type=Path,
                         default=Path("/scratch/shared/nik/data/treeclf/parallax_cache"))
     parser.add_argument("--surface", choices=("depth", "parallax"), default="depth",
-                        help="depth: monokular geschaetzt. parallax: aus Framepaaren gemessen.")
+                        help="depth: estimated monocularly. parallax: measured from frame pairs.")
 
     parser.add_argument("--split-prominence", type=float, default=0.35,
-                        help="Wie tief der Sattel zwischen zwei Wipfeln sein muss, als Anteil des "
-                             "Hoehenumfangs der jeweiligen Instanz.")
+                        help="How deep the saddle between two treetops has to be, as a fraction "
+                             "of the height range of the respective instance.")
     parser.add_argument("--min-part-area-factor", type=float, default=0.20,
-                        help="Beide Teile muessen mindestens so gross sein wie dieser Anteil einer "
-                             "erwarteten Krone -- sonst wird die Teilung verworfen.")
+                        help="Both parts have to be at least this fraction of an expected crown -- "
+                             "otherwise the split is discarded.")
     parser.add_argument("--min-compactness", type=float, default=0.25)
 
-    parser.add_argument("--split-threshold", type=float, default=0.10, help="Schwelle fuers Verschmelzen.")
+    parser.add_argument("--split-threshold", type=float, default=0.10, help="Threshold for merging.")
     parser.add_argument("--color-threshold", type=float, default=16.0)
     parser.add_argument("--max-area-factor", type=float, default=4.0)
     parser.add_argument("--crown-px", type=float, default=100.0)
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--detrend-factor", type=float, default=3.0)
-    parser.add_argument("--no-merge", action="store_true", help="Nur teilen, nicht verschmelzen.")
-    parser.add_argument("--no-split", action="store_true", help="Nur verschmelzen, nicht teilen.")
+    parser.add_argument("--no-merge", action="store_true", help="Only split, do not merge.")
+    parser.add_argument("--no-split", action="store_true", help="Only merge, do not split.")
     return parser.parse_args()
 
 

@@ -1,23 +1,22 @@
-"""Trainingsausschnitte mit frei waehlbarem Bildfeld direkt aus dem Orthomosaik.
+"""Training crops with a freely chosen field of view, straight from the orthomosaic.
 
-Die aufbereiteten Kacheln haben eine feste Groesse von 2048 px. Damit laesst sich
-der Massstab beim Training nur begrenzt aufweiten: das groesste moegliche Fenster
-ist die Kachel selbst, was bei 640 px Eingabe rund 5.4 cm/px ergibt. Nik's
-urbane Aufnahmen liegen aber bei etwa 20 cm/px -- gemessen an den faelschlich
-segmentierten Autos, die mit 18 bis 28 px Laenge bei 4.5 m Fahrzeuglaenge auf
-17 bis 25 cm/px fuehren.
+The prepared tiles have a fixed size of 2048 px. That limits how far the scale
+can be widened during training: the largest possible window is the tile itself,
+which at a 640 px input gives about 5.4 cm/px. Our urban captures, however, are
+at roughly 20 cm/px -- measured on the wrongly segmented cars, which at 18 to
+28 px length and a 4.5 m vehicle length imply 17 to 25 cm/px.
 
-Quebec liefert dagegen die vollstaendigen Orthomosaike (rund 40 000 x 42 000 px
-je Zone). Daraus laesst sich ein Fenster beliebiger Groesse schneiden, und weil
-die COGs Uebersichtsstufen bis 1/128 mitbringen, kostet ein 7500-px-Fenster auf
-640 px heruntergelesen nur 7 ms -- weniger als das Lesen einer JPEG-Kachel.
+Quebec, by contrast, supplies the complete orthomosaics (around 40,000 x 42,000
+px per zone). A window of any size can be cut from them, and because the COGs
+carry overview levels down to 1/128, a 7500 px window read down to 640 px costs
+only 7 ms -- less than reading a JPEG tile.
 
-Die Grenze ist eine andere: **EoMT hat 200 feste Anfragen.** Bei rund 400 bis 440
-Kronen je Hektar passen in ein Bildfeld von 0.31 ha etwa 150 Kronen, das
-entspricht 8.7 cm/px. Weiter aufgeweitet enthaelt das Bild mehr Baeume, als das
-Modell ueberhaupt ausgeben kann, und die ueberzaehligen zaehlen im Training als
-verfehlt. Ausschnitte mit zu vielen Kronen werden deshalb verworfen und neu
-gezogen, statt dem Netz ein unloesbares Ziel zu geben.
+The limit is a different one: **EoMT has 200 fixed queries.** At around 400 to
+440 crowns per hectare, about 150 crowns fit into a field of view of 0.31 ha,
+which corresponds to 8.7 cm/px. Widened further, the image contains more trees
+than the model can output at all, and the surplus ones count as misses during
+training. Crops with too many crowns are therefore discarded and redrawn,
+instead of giving the network an unsolvable target.
 
     from quebec_cog import CogCrops
     CogCrops(root, zones=["zone1"], gsd_range=(2.7, 8.7), ...)
@@ -37,11 +36,11 @@ from quebec import load_polygons
 
 
 class CogCrops(torch.utils.data.Dataset):
-    """Zufaellige Ausschnitte aus dem Orthomosaik, Bildfeld zufaellig gewaehlt.
+    """Random crops from the orthomosaic, with a randomly chosen field of view.
 
-    `gsd_range` gibt den Massstab an, den das Modell sehen soll, in cm je Pixel
-    der Eingabe -- nicht die Fenstergroesse. Das ist die Groesse, auf die es
-    ankommt: sie bestimmt, wie gross eine Krone im Eingabebild erscheint.
+    `gsd_range` gives the scale the model is meant to see, in cm per input pixel
+    -- not the window size. That is the quantity that matters: it determines how
+    large a crown appears in the input image.
     """
 
     def __init__(self, root: Path, zones: list[str], date: str, size: int, length: int,
@@ -51,17 +50,17 @@ class CogCrops(torch.utils.data.Dataset):
         self.gsd_range, self.augment = gsd_range, augment
         self.min_area_px, self.max_instances, self.tries = min_area_px, max_instances, tries
         self.zones = zones
-        self._sources: dict[int, list] = {}   # je Prozess eigene Handles
+        self._sources: dict[int, list] = {}   # separate handles per process
 
-        # Polygone einmal in Weltkoordinaten laden; die Umrechnung ins Fenster
-        # passiert spaeter und ist nur eine Verschiebung mit Skalierung.
+        # Load the polygons once in world coordinates; the conversion into the
+        # window happens later and is only a shift with a scaling.
         self.rings: dict[str, list[np.ndarray]] = {}
         for zone in zones:
             polygons = self.root / f"Z{zone[-1]}_polygons.gpkg"
             self.rings[zone] = [r for r, _ in load_polygons(polygons, f"Z{zone[-1]}_polygons")]
 
     def _open(self):
-        """rasterio-Handles sind nicht fork-sicher -- je Worker eigene oeffnen."""
+        """rasterio handles are not fork-safe -- open separate ones per worker."""
         import rasterio
 
         key = os.getpid()
@@ -89,8 +88,8 @@ class CogCrops(torch.utils.data.Dataset):
 
         for _ in range(self.tries):
             src, boxes, pixels, gsd = self._sources[os.getpid()][int(rng.integers(len(self.zones)))]
-            # Massstab logarithmisch ziehen: die Spanne 2.7 bis 8.7 cm ist ein
-            # Faktor 3, linear gezogen kaemen weite Bildfelder zu selten vor.
+            # Draw the scale logarithmically: the range 2.7 to 8.7 cm is a factor
+            # of 3, and drawn linearly, wide fields of view would be too rare.
             gsd_model = float(np.exp(rng.uniform(*np.log(self.gsd_range)))) / 100.0
             window_px = int(round(gsd_model * self.size / gsd))
             if window_px > min(src.width, src.height):
@@ -107,7 +106,7 @@ class CogCrops(torch.utils.data.Dataset):
             patch = src.read((1, 2, 3), window=rasterio.windows.Window(x0, y0, window_px, window_px),
                              out_shape=(3, self.size, self.size))
             patch = np.ascontiguousarray(np.transpose(patch, (1, 2, 0)))
-            if (patch.max(axis=2) == 0).mean() > 0.05:   # Mosaikrand
+            if (patch.max(axis=2) == 0).mean() > 0.05:   # mosaic margin
                 continue
 
             factor = self.size / window_px

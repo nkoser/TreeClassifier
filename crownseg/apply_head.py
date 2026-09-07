@@ -1,14 +1,14 @@
-"""Den FORTRESS-Kopf auf unsere eigenen Kroneninstanzen anwenden.
+"""Apply the FORTRESS head to our own crown instances.
 
-`classify.py` fragt den kanadischen Checkpoint; der muss auf einem Kiefern-
-bestand eine der 14 Quebec-Klassen waehlen und antwortet Gelb-Birke. Hier
-haengt derselbe eingefrorene Backbone an dem Kopf aus `train_head.py`, der
-acht mitteleuropaeische Klassen kennt -- darunter *Pinus sylvestris*.
+`classify.py` queries the Canadian checkpoint; on a pine stand it has to pick
+one of the 14 Quebec classes and answers yellow birch. Here the same frozen
+backbone is attached to the head from `train_head.py`, which knows eight Central
+European classes -- among them *Pinus sylvestris*.
 
-Aufbau wie in `classify.py`, damit die Ergebnisse vergleichbar bleiben:
-Schwerpunkt der Maske als Mittelpunkt, Ausschnitt als 2.4-faches des
-Kronendurchmessers, Massstab je Ordner aus `scale_probe.py`. Dieselben
-Konventionen hat `fortress.py` beim Erzeugen der Trainingsausschnitte benutzt.
+The setup follows `classify.py`, so the results stay comparable: the centroid of
+the mask as the centre, the crop as 2.4 times the crown diameter, the scale per
+folder from `scale_probe.py`. `fortress.py` used the same conventions when
+producing the training crops.
 
     python crownseg/apply_head.py --labels results_frames_sam3_multiscale --scales pines=1.2
 """
@@ -35,8 +35,8 @@ from infer_species import (  # noqa: E402
     load_class_names, resolve_device, to_model_input,
 )
 
-# Nadelbaeume gruen, Laubbaeume orange, Nicht-Baum grau -- so ist auf dem Bild
-# ohne Legende zu sehen, ob die Zuordnung dem Bestand ueberhaupt entspricht.
+# Conifers green, broadleaves orange, non-tree grey -- that way the image shows
+# without a legend whether the assignment matches the stand at all.
 FARBEN = {
     "Picea abies": (90, 200, 90), "Abies alba": (150, 210, 110),
     "Pinus sylvestris": (60, 230, 230), "Pseudotsuga menziesii": (110, 160, 60),
@@ -77,7 +77,7 @@ def main() -> None:
                         default=Path("/scratch/shared/nik/data/treeclf/checkpoints/kopf_fortress.pth"))
     parser.add_argument("--categories", type=Path,
                         default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
-    parser.add_argument("--scales", nargs="*", default=[], help="ORDNER=FAKTOR aus scale_probe.py.")
+    parser.add_argument("--scales", nargs="*", default=[], help="FOLDER=FACTOR from scale_probe.py.")
     parser.add_argument("--footprint-factor", type=float, default=2.4)
     parser.add_argument("--min-area", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=32)

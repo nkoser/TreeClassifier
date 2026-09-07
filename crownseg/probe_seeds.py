@@ -1,23 +1,23 @@
-"""Vorfrage: taugen die Wipfel der Tiefenkarte als zusaetzliche Prompts?
+"""Preliminary question: are the treetops of the depth map usable as extra prompts?
 
-Der Ergaenzungsschritt aus `sam3_depth.py` hat auf test1 nichts getroffen (0 von
-291 Kronen bei IoU 0.5). Daraus folgt aber *nicht*, dass die Wipfelpositionen
-schlecht sind -- dort kam die Form aus dem Watershed, und nur die Form wurde
-gemessen. Ein Punkt-Prompt an SAM 3 nimmt aus der Tiefe nur das Wo und laesst die
-Form beim Bildmodell.
+The completion step in `sam3_depth.py` hit nothing on test1 (0 of 291 crowns at
+IoU 0.5). That does *not* imply the treetop positions are bad -- there the shape
+came from the watershed, and only the shape was measured. A point prompt to
+SAM 3 takes only the where from the depth and leaves the shape to the image
+model.
 
-Dieses Skript misst deshalb die Obergrenze, bevor irgendetwas gebaut wird:
+So this script measures the ceiling before anything is built:
 
-  verpasste Kronen        GT-Kronen ohne Treffer in der SAM-3-Vorhersage.
-  freie Wipfel            Wipfel, die in keiner vorhergesagten Krone liegen.
-  davon in einer          Wie viele freie Wipfel liegen in einer verpassten
-  verpassten Krone        Krone? Nur diese koennten ueberhaupt etwas beitragen.
-  erreichbare Kronen      Wie viele verpasste Kronen enthalten mindestens einen
-                          freien Wipfel? Das ist die Trefferquote, die ein
-                          perfekter Prompt zusaetzlich holen koennte.
+  missed crowns          GT crowns with no hit in the SAM 3 prediction.
+  free treetops          Treetops lying in no predicted crown.
+  of those, in a         How many free treetops lie in a missed crown? Only
+  missed crown           those could contribute anything at all.
+  reachable crowns       How many missed crowns contain at least one free
+                         treetop? That is the recall a perfect prompt could
+                         additionally pick up.
 
-Liegt die erreichbare Quote niedrig, ist die Idee unabhaengig von der
-Maskenqualitaet erledigt und muss nicht implementiert werden.
+If the reachable rate is low, the idea is settled regardless of mask quality and
+does not have to be implemented.
 
     python crownseg/probe_seeds.py --labels results_sam3depth_pro_split/test1
 """
@@ -42,7 +42,7 @@ from segment_trees import build_pseudo_chm  # noqa: E402
 
 
 class Params:
-    """Dieselben Werte wie im Lauf, der die Labelkarten erzeugt hat."""
+    """The same values as in the run that produced the label maps."""
 
     crown_px = 275.0
     smooth_factor = 0.06
@@ -65,7 +65,7 @@ def main() -> None:
     parser.add_argument("--min-area", type=int, default=400)
     parser.add_argument("--iou-thresh", type=float, default=0.5)
     parser.add_argument("--prominence", type=float, nargs="*", default=[0.10],
-                        help="Mehrere Werte durchprobieren, um den Engpass der Wipfelsuche zu finden.")
+                        help="Try several values to locate the bottleneck of the treetop search.")
     parser.add_argument("--gap-percentile", type=float, default=15.0)
     args = parser.parse_args()
 
@@ -93,7 +93,7 @@ def main() -> None:
                                  for v in np.unique(labels) if v > 0) if i is not None]
         predicted = [i for i in predicted if i.area >= floor]
 
-        # Welche GT-Kronen hat SAM 3 verpasst?
+        # Which GT crowns did SAM 3 miss?
         taken = set()
         for prediction in predicted:
             best, best_iou = -1, args.iou_thresh
@@ -147,8 +147,8 @@ def main() -> None:
         t = totals[value]
         hits = t["gt"] - t["verpasst"]
         ceiling_hits = hits + t["erreichbar"]
-        # Obergrenze: jeder treffende freie Wipfel wird eine perfekte Maske,
-        # jeder nicht treffende ein Fehlalarm.
+        # Ceiling: every hitting free treetop becomes a perfect mask, every
+        # non-hitting one a false alarm.
         predicted = t["gt"] - t["verpasst"] + t["frei"]
         precision = ceiling_hits / max(1, predicted)
         recall = ceiling_hits / max(1, t["gt"])

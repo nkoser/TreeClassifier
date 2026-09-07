@@ -1,33 +1,33 @@
-"""Quebec Trees als zweite Trainingsquelle -- kleinere Kronen als BAMFORESTS.
+"""Quebec Trees as a second training source -- smaller crowns than BAMFORESTS.
 
-BAMFORESTS annotiert Kronen mit einem Median von 4.78 m (Stadtwald) bis 6.66 m
-(Hain). Ein darauf trainiertes Modell traegt diese Groessenvorstellung mit und
-fasst in feinkroniger Bestaenden mehrere Baeume zu einer Maske zusammen -- auf
-Nik's Kiefernframes deutlich sichtbar. Der Bildmassstab hilft dagegen nicht: bei
-x1.2 wie bei x2.8 sagt das Modell Kronen von 2.6 m Median vorher, es folgt also
-seiner gelernten Vorstellung und nicht der Aufloesung.
+BAMFORESTS annotates crowns with a median of 4.78 m (Stadtwald) to 6.66 m
+(Hain). A model trained on it carries that notion of size along and lumps
+several trees into one mask in fine-crowned stands -- clearly visible on our
+pine frames. The image scale does not help against it: at x1.2 as at x2.8 the
+model predicts crowns with a median of 2.6 m, so it follows its learned notion
+and not the resolution.
 
-Quebec Trees (Cloutier et al. 2023, CC-BY-4.0) deckt den fehlenden Bereich ab.
-Gemessen an den Polygonen selbst, nicht aus der Publikation uebernommen:
+Quebec Trees (Cloutier et al. 2023, CC-BY-4.0) covers the missing range.
+Measured on the polygons themselves, not taken from the publication:
 
-    22 933 Kronen | Median 4.09 m | p5 1.82 m | p95 8.54 m | GSD 1.64 cm/px
+    22,933 crowns | median 4.09 m | p5 1.82 m | p95 8.54 m | GSD 1.64 cm/px
 
     Abies balsamea   2.78 m   n=2895     Acer rubrum      4.23 m   n=5857
     Thuja occid.     2.97 m   n=1510     Betula papyr.    4.84 m   n=5894
     Picea spp.       3.02 m   n= 599     Pinus strobus    7.25 m   n= 569
 
-Die Nadelbaeume liegen mit 2.8 bis 3.0 m im Bereich der Kiefern in `pines`.
+At 2.8 to 3.0 m the conifers are in the range of the pines in `pines`.
 
-Unterschied zur Aufbereitung von BAMFORESTS: dort lagen fertige COCO-Kacheln
-vor. Hier gibt es drei grosse Orthomosaike als Cloud-Optimized GeoTIFF und die
-Annotationen als GeoPackage in UTM-Koordinaten -- Kacheln und die Umrechnung von
-Welt- in Pixelkoordinaten kommen also dazu. Herausgeschrieben wird exakt das
-Format von `bamforests.py` (JPEG je Kachel plus `annotations.json`), damit alles
-Nachgelagerte unveraendert weiterlaeuft.
+Difference from the BAMFORESTS preparation: there, finished COCO tiles were
+available. Here there are three large orthomosaics as cloud-optimized GeoTIFF and
+the annotations as a GeoPackage in UTM coordinates -- so tiling and the
+conversion from world to pixel coordinates come on top. What is written out is
+exactly the format of `bamforests.py` (one JPEG per tile plus
+`annotations.json`), so that everything downstream keeps working unchanged.
 
-Aufteilung: Zone 3 wird komplett als Testgebiet zurueckgehalten -- dasselbe
-Prinzip wie Hain in BAMFORESTS, wo ein raeumlich getrenntes Gebiet den einzigen
-ehrlichen Uebertragungstest liefert.
+Split: zone 3 is held back completely as the test area -- the same principle as
+Hain in BAMFORESTS, where a spatially separate area provides the only honest
+transfer test.
 
     python crownseg/quebec.py
 """
@@ -47,12 +47,11 @@ ZONE_SPLITS = {"zone1": "train", "zone2": "val", "zone3": "test"}
 
 
 def wkb_rings(blob: bytes) -> list[np.ndarray]:
-    """Ringe eines GeoPackage-Blobs als Weltkoordinaten.
+    """Rings of a GeoPackage blob as world coordinates.
 
-    Der Kopf ist 8 Byte plus optionales Huellrechteck; danach folgt normales
-    WKB. Gelesen wird nur der Aussenring je Polygon -- Loecher in einer Krone
-    gibt es in diesem Datensatz nicht, und die Zielmasken kennen sie ohnehin
-    nicht.
+    The header is 8 bytes plus an optional envelope; normal WKB follows. Only the
+    outer ring of each polygon is read -- there are no holes in a crown in this
+    dataset, and the target masks do not know them anyway.
     """
     flags = blob[3]
     envelope = {0: 0, 1: 4, 2: 6, 3: 6, 4: 8}[(flags >> 1) & 0x07]
@@ -78,7 +77,7 @@ def wkb_rings(blob: bytes) -> list[np.ndarray]:
             offset = read_ring(offset)
             if index == 0:
                 continue
-            rings.pop()  # Innenringe verwerfen
+            rings.pop()  # discard inner rings
     elif base == 6:
         polygons, = struct.unpack(endian + "I", blob[offset : offset + 4])
         offset += 4
@@ -113,8 +112,8 @@ def prepare_zone(cog: Path, polygons: Path, table: str, out_dir: Path,
     written = crowns = 0
 
     with rasterio.open(cog) as src:
-        transform = ~src.transform  # Welt -> Pixel
-        # Alle Kronen einmal in Pixelkoordinaten, danach nur noch verschieben.
+        transform = ~src.transform  # world -> pixel
+        # All crowns once in pixel coordinates, after that only shifted.
         in_pixels = []
         for ring, label in rings:
             cols, rows = transform * (ring[:, 0], ring[:, 1])
@@ -126,8 +125,8 @@ def prepare_zone(cog: Path, polygons: Path, table: str, out_dir: Path,
 
         for y0 in range(0, src.height - tile + 1, step):
             for x0 in range(0, src.width - tile + 1, step):
-                # Kronen, die vollstaendig in der Kachel liegen. Angeschnittene
-                # sind als Ziel schaedlich -- dieselbe Regel wie bei BAMFORESTS.
+                # Crowns that lie completely inside the tile. Cut ones are harmful
+                # as a target -- the same rule as for BAMFORESTS.
                 inside = np.flatnonzero(
                     (boxes[:, 0] >= x0) & (boxes[:, 1] >= y0)
                     & (boxes[:, 2] < x0 + tile) & (boxes[:, 3] < y0 + tile))
@@ -137,7 +136,7 @@ def prepare_zone(cog: Path, polygons: Path, table: str, out_dir: Path,
                 window = rasterio.windows.Window(x0, y0, tile, tile)
                 patch = src.read((1, 2, 3), window=window)
                 patch = np.transpose(patch, (1, 2, 0))
-                # Randbereiche der Orthomosaike sind schwarz oder transparent.
+                # The margins of the orthomosaics are black or transparent.
                 if (patch.max(axis=2) == 0).mean() > 0.05:
                     continue
 
@@ -160,9 +159,9 @@ def main() -> None:
     parser.add_argument("--date", default="2021-09-02")
     parser.add_argument("--out", type=Path,
                         default=Path("/scratch/shared/nik/data/quebec_trees/crownseg"))
-    parser.add_argument("--tile", type=int, default=2048, help="Wie bei BAMFORESTS.")
+    parser.add_argument("--tile", type=int, default=2048, help="As in BAMFORESTS.")
     parser.add_argument("--overlap", type=int, default=1024)
-    parser.add_argument("--min-crowns", type=int, default=5, help="Leere Kacheln ueberspringen.")
+    parser.add_argument("--min-crowns", type=int, default=5, help="Skip empty tiles.")
     args = parser.parse_args()
 
     for zone, split in ZONE_SPLITS.items():

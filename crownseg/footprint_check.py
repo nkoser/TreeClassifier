@@ -1,21 +1,19 @@
-"""Wie gross muss der Ausschnitt um eine Krone sein?
+"""How large does the crop around a crown have to be?
 
-DINOvTree wurde auf Ausschnitten von 9.73 m Kantenlaenge trainiert, und diese
-Zahl wurde bisher unbesehen uebernommen. Sie passt aber nur zu der Kronengroesse,
-fuer die sie gedacht war:
+DINOvTree was trained on crops of 9.73 m edge length, and that number had been
+adopted unquestioned. It only suits the crown size it was meant for, though:
 
-    BAMFORESTS Hain   6.66 m Krone in 9.73 m  ->  47 % der Flaeche
-    Quebec            4.09 m Krone in 9.73 m  ->  18 %
-    Nik's pines       2.40 m Krone in 9.73 m  ->   6 %
+    BAMFORESTS Hain   6.66 m crown in 9.73 m  ->  47 % of the area
+    Quebec            4.09 m crown in 9.73 m  ->  18 %
+    our own pines     2.40 m crown in 9.73 m  ->   6 %
 
-Bei sechs Prozent beschreibt der Ausschnitt den Bestand und nicht den gemeinten
-Baum -- was erklaert, warum ein ganzer Ordner einheitlich als eine Art
-klassifiziert wird und die Merkmalscluster nach Bestandstextur gruppieren.
+At six percent the crop describes the stand and not the tree in question -- which
+explains why a whole folder gets classified uniformly as one species and why the
+feature clusters group by stand texture.
 
-Hier wird gemessen, wie Artgenauigkeit und Clusterreinheit vom Verhaeltnis
-Krone-zu-Ausschnitt abhaengen. Auf Quebec, wo beides pruefbar ist: die
-Ausschnittsgroesse wird je Krone aus ihrem eigenen Durchmesser bestimmt, nicht
-fest vorgegeben.
+What is measured here is how species accuracy and cluster purity depend on the
+crown-to-crop ratio. On Quebec, where both are checkable: the crop size is
+derived per crown from its own diameter rather than fixed in advance.
 
     python crownseg/footprint_check.py --faktoren 1.5 2.4 3.5 5.0
 """
@@ -73,7 +71,7 @@ def main() -> None:
     parser.add_argument("--categories", type=Path,
                         default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
     parser.add_argument("--faktoren", type=float, nargs="*", default=[1.5, 2.4, 3.5, 5.0, 8.0],
-                        help="Ausschnitt als Vielfaches des Kronendurchmessers.")
+                        help="Crop as a multiple of the crown diameter.")
     parser.add_argument("--clusters", type=int, default=14)
     parser.add_argument("--limit", type=int, default=900)
     parser.add_argument("--batch-size", type=int, default=16)
@@ -91,7 +89,7 @@ def main() -> None:
     eintraege = con.execute(f"SELECT Shape, Label FROM {table}").fetchall()
     cog = next((args.root / args.date / args.zone).glob("*-cog.tif"))
 
-    # Einmal alle Kronen mit Mittelpunkt und Durchmesser sammeln.
+    # Collect all crowns once, with centre and diameter.
     kronen = []
     with rasterio.open(cog) as src:
         inverse = ~src.transform
@@ -130,8 +128,8 @@ def main() -> None:
 
             features, probabilities = extract_features(model, np.stack(crops), args.batch_size, device, "head")
             wahr = pd.Series([kurz(a) for a in arten])
-            # short_name, nicht kurz(): die Klassennamen tragen Autorenzitate
-            # ("Abies balsamea (L.) Mill."), und kurz() nimmt das letzte Wort.
+            # short_name, not kurz(): the class names carry author citations
+            # ("Abies balsamea (L.) Mill."), and kurz() takes the last word.
             vorhergesagt = [short_name(class_names[k]) for k in probabilities.argmax(axis=1)]
             genauigkeit = np.mean([passt(w, v) for w, v in zip(arten, vorhergesagt)])
 

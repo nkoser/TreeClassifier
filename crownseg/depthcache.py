@@ -1,15 +1,15 @@
-"""Tiefenkarten fuer alle BAMFORESTS-Kacheln vorrechnen.
+"""Precompute depth maps for all BAMFORESTS tiles.
 
-Fuer die Tiefe als vierten Eingabekanal muss sie zu jedem Trainingsausschnitt
-verfuegbar sein -- 2456 Kacheln, im Training zufaellig ausgeschnitten. Bei jedem
-Zugriff Depth Pro laufen zu lassen waere um Groessenordnungen teurer als das
-eigentliche Training, also einmal vorrechnen und als PNG ablegen.
+For the depth to serve as a fourth input channel it has to be available for
+every training crop -- 2456 tiles, cropped at random during training. Running
+Depth Pro on every access would be orders of magnitude more expensive than the
+training itself, so compute it once and store it as PNG.
 
-Gespeichert wird die **je Kachel normierte** Tiefe als uint8, nicht der Rohwert.
-Monokulare Tiefe hat ohnehin keine verlaessliche absolute Skala -- die Modelle
-sind auf Bodenperspektiven trainiert, nicht auf Nadir aus 80 m. Was traegt, ist
-die relative Struktur innerhalb der Kachel, und die bleibt erhalten. Nebenbei
-kostet uint8 ein Viertel von float16 (10 GB statt 40 GB fuer den ganzen Satz).
+What is stored is the depth **normalised per tile** as uint8, not the raw value.
+Monocular depth has no reliable absolute scale anyway -- the models are trained
+on ground perspectives, not on nadir from 80 m. What carries is the relative
+structure within the tile, and that is preserved. Incidentally uint8 costs a
+quarter of float16 (10 GB instead of 40 GB for the whole set).
 
     python crownseg/depthcache.py --splits train val test1 test2
 """
@@ -45,11 +45,11 @@ def depth_of(model, processor, image_rgb: np.ndarray, device) -> np.ndarray:
 
 
 def to_uint8(depth: np.ndarray) -> np.ndarray:
-    """Invertiert (naeher = hoeher) und auf 0..255 gespreizt.
+    """Inverted (closer = higher) and stretched to 0..255.
 
-    Die Spreizung laeuft ueber das 1.- bis 99.-Perzentil statt ueber Min und Max:
-    ein einzelner Ausreisser -- eine Luecke bis zum Boden, ein Reflex -- wuerde
-    sonst den gesamten nutzbaren Wertebereich zusammendruecken.
+    The stretch uses the 1st to 99th percentile rather than min and max: a single
+    outlier -- a gap down to the ground, a reflection -- would otherwise compress
+    the entire usable value range.
     """
     surface = -depth.astype(np.float32)
     low, high = np.percentile(surface, [1, 99])

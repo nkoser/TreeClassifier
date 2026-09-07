@@ -1,15 +1,15 @@
-"""Diagnose: Wie stark haengt die Artvorhersage vom gewaehlten Bildmassstab ab?
+"""Diagnosis: how strongly does the species prediction depend on the image scale?
 
-Der Quebec-Trees-Checkpoint hat immer Ausschnitte von 9.73 m Kantenlaenge gesehen.
-Fuer eigene Frames ohne Georeferenzierung ist der Massstab unbekannt. Dieses Skript
-klassifiziert dieselben Detektionen bei verschiedenen angenommenen Ausschnitts-
-groessen (in Quell-Pixeln) und zeigt, wie sich Vorhersage und Konfidenz aendern.
+The Quebec Trees checkpoint has only ever seen crops of 9.73 m edge length. For
+our own frames without georeferencing the scale is unknown. This script
+classifies the same detections at various assumed crop sizes (in source pixels)
+and shows how prediction and confidence change.
 
-Praktisch heisst das: welcher Pixel-Ausschnitt entspricht 9.73 m in deinen Bildern?
-Die Groesse mit den plausibelsten/stabilsten Vorhersagen ist ein Indiz -- ersetzt
-aber keine echte Massstabsangabe (Flughoehe + Bildwinkel oder Referenzstrecke).
+In practice: which pixel crop corresponds to 9.73 m in your images? The size
+with the most plausible and most stable predictions is an indication -- but no
+substitute for a real scale (altitude + field of view, or a reference distance).
 
-Beispiel:
+Example:
     python scale_sweep.py --frames /cold/Mahfuz/chosen_frames/pines/frame_000006.jpg \
         --crop-sizes 100 150 200 300 400 600 --n-trees 8
 """
@@ -42,7 +42,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--frames", type=Path, nargs="+", required=True)
     parser.add_argument("--crop-sizes", type=int, nargs="+", default=[100, 150, 200, 300, 450, 650])
-    parser.add_argument("--n-trees", type=int, default=8, help="Detektionen pro Frame (nach Score).")
+    parser.add_argument("--n-trees", type=int, default=8, help="Detections per frame (by score).")
     parser.add_argument("--min-score", type=float, default=0.4)
     parser.add_argument("--ckpt", type=Path, default=REPO_ROOT / "checkpoints" / "dinovtreeb_quebectrees.pth")
     parser.add_argument("--categories", type=Path, default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")

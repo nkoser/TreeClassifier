@@ -1,21 +1,21 @@
-"""Kronenabgrenzung mit SAM (Segment Anything), automatische Maskengenerierung.
+"""Crown delineation with SAM (Segment Anything), automatic mask generation.
 
-Anderer Ansatz als segment_trees.py: statt aus geschaetzter Tiefe eine Oberflaeche
-zu bauen und sie zu partitionieren, segmentiert SAM entlang echter Bildkanten. Das
-umgeht die Schwaeche des Tiefenmodells in kontrastarmen Bereichen -- SAM sieht die
-Kronenraender direkt.
+A different approach from segment_trees.py: instead of building a surface from
+estimated depth and partitioning it, SAM segments along real image edges. That
+avoids the weakness of the depth model in low-contrast areas -- SAM sees the
+crown boundaries directly.
 
-SAM erzeugt Masken auf allen Skalen gleichzeitig (Blatt, Ast, Krone, ganzer
-Bestand). Die Arbeit steckt deshalb in der Auswahl:
-  1. Flaechenfenster um die erwartete Kronengroesse.
-  2. Kompaktheit -- Kronen sind halbwegs rund, Schattenbaender nicht.
-  3. Ueberlappungsaufloesung: nach Score sortiert greedy annehmen, Masken mit
-     hoher IoU zu bereits akzeptierten verwerfen (verhindert die Skalenstapel).
+SAM produces masks at all scales simultaneously (leaf, branch, crown, whole
+stand). The work is therefore in the selection:
+  1. An area window around the expected crown size.
+  2. Compactness -- crowns are reasonably round, shadow bands are not.
+  3. Overlap resolution: accept greedily by score, discard masks with a high IoU
+     against already accepted ones (this removes the scale stacks).
 
-Optional wird die Tiefenkarte aus segment_trees.py als Zusatzfilter genutzt: eine
-Krone sollte sich gegenueber ihrem Rand erheben.
+Optionally the depth map from segment_trees.py is used as an extra filter: a
+crown should rise above its own margin.
 
-Beispiel:
+Example:
     python segment_sam.py --frames 100/frame_000537.jpg --crown-px 100
 """
 
@@ -32,17 +32,16 @@ from PIL import Image
 
 from infer_species import IMAGE_SUFFIXES, REPO_ROOT, resolve_device
 
-SAM_MODEL = "facebook/sam-vit-large"  # laut Ablation besser als vit-huge, siehe README
+SAM_MODEL = "facebook/sam-vit-large"  # better than vit-huge per the ablation, see the README
 
 
 def build_generator(model_id: str, device, args):
-    """Baut die Maskengenerator-Pipeline.
+    """Build the mask-generation pipeline.
 
-    pred_iou_thresh und stability_score_thresh sind die eigentlichen Stellschrauben
-    fuer die Ausbeute: SAM verwirft damit intern unsichere Masken, bevor sie
-    ueberhaupt herauskommen. Die Defaults (0.88 / 0.95) sind fuer alltagsuebliche
-    Objekte gedacht -- im Kronendach, wo Grenzen objektiv unscharf sind, sortieren
-    sie den Grossteil der Kronen aus.
+    pred_iou_thresh and stability_score_thresh are the real knobs for the yield:
+    SAM uses them internally to discard uncertain masks before they ever come
+    out. The defaults (0.88 / 0.95) are meant for everyday objects -- in a canopy,
+    where boundaries are objectively fuzzy, they discard the bulk of the crowns.
     """
     from transformers import pipeline
 
@@ -59,7 +58,7 @@ def build_generator(model_id: str, device, args):
 
 
 def mask_metrics(mask: np.ndarray) -> dict[str, float] | None:
-    """Flaeche, Kompaktheit und Bounding-Box einer Binaermaske."""
+    """Area, compactness and bounding box of one binary mask."""
     mask_u8 = mask.astype(np.uint8)
     contours, _ = cv2.findContours(mask_u8, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
@@ -82,7 +81,7 @@ def mask_metrics(mask: np.ndarray) -> dict[str, float] | None:
         "cy": moments["m01"] / moments["m00"],
         "xmin": x, "ymin": y, "xmax": x + w, "ymax": y + h,
         "area_px": area,
-        # 1.0 = perfekter Kreis; Schattenbaender und Astpartien liegen deutlich darunter.
+        # 1.0 = a perfect circle; shadow bands and branch parts fall well below.
         "kompaktheit": 4 * np.pi * area / (perimeter**2),
         "solidity": area / hull_area,
         "seitenverhaeltnis": min(w, h) / max(w, h),
@@ -91,10 +90,10 @@ def mask_metrics(mask: np.ndarray) -> dict[str, float] | None:
 
 
 def metrics_from_region(region) -> dict[str, float] | None:
-    """mask_metrics auf dem Bounding-Box-Ausschnitt statt auf dem ganzen Bild.
+    """mask_metrics on the bounding-box crop instead of on the whole image.
 
-    Bei mehreren hundert Instanzen je Frame ist der Unterschied erheblich: eine
-    Vollbildmaske je Instanz kostet 2 Megapixel, der Ausschnitt nur die Krone.
+    With several hundred instances per frame the difference is considerable: a
+    full-frame mask per instance costs 2 megapixels, the crop only the crown.
     """
     metrics = mask_metrics(region.image)
     if metrics is None:
@@ -108,7 +107,7 @@ def metrics_from_region(region) -> dict[str, float] | None:
 
 
 def select_crowns(masks: list[np.ndarray], scores: np.ndarray, args) -> tuple[pd.DataFrame, list[np.ndarray]]:
-    """Filtert Kandidaten und loest Ueberlappungen greedy nach Score auf."""
+    """Filter the candidates and resolve overlaps greedily by score."""
     expected_area = np.pi * (args.crown_px / 2) ** 2
     min_area, max_area = expected_area * args.min_area_factor, expected_area * args.max_area_factor
 
@@ -147,7 +146,7 @@ def draw(image_bgr: np.ndarray, masks: list[np.ndarray], crowns: pd.DataFrame, c
     canvas = image_bgr.copy()
     if masks:
         covered = np.any(np.stack(masks), axis=0)
-        # Nicht erfasste Flaeche abdunkeln -- so sieht man sofort, was fehlt.
+        # Darken the uncaptured area -- that shows at a glance what is missing.
         canvas[~covered] = (canvas[~covered] * 0.45).astype(np.uint8)
         for mask in masks:
             contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -174,13 +173,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-solidity", type=float, default=0.65)
     parser.add_argument("--max-overlap", type=float, default=0.30)
 
-    parser.add_argument("--points-per-crop", type=int, default=48, help="Punktraster je Kachel (48 -> 2304 Punkte).")
-    parser.add_argument("--crop-layers", type=int, default=2, help="Zusaetzliche Zoomstufen fuer kleine Objekte.")
+    parser.add_argument("--points-per-crop", type=int, default=48, help="Point grid per tile (48 -> 2304 points).")
+    parser.add_argument("--crop-layers", type=int, default=2, help="Extra zoom levels for small objects.")
     parser.add_argument("--points-per-batch", type=int, default=256)
     parser.add_argument("--pred-iou-thresh", type=float, default=0.70,
-                        help="SAM-interne Guetefilterung. Senken erhoeht die Ausbeute deutlich.")
+                        help="SAM-internal quality filter. Lowering it raises the yield markedly.")
     parser.add_argument("--stability-score-thresh", type=float, default=0.85,
-                        help="SAM-interne Stabilitaetsfilterung. Im Kronendach zu streng.")
+                        help="SAM-internal stability filter. Too strict for a canopy.")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
 
@@ -211,7 +210,7 @@ def main() -> None:
         image_bgr = cv2.imread(str(frame_path))
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
-        # Die mask-generation-Pipeline erwartet PIL/Pfad, kein numpy-Array.
+        # The mask-generation pipeline expects PIL/a path, not a numpy array.
         with torch.no_grad():
             output = generator(Image.fromarray(image_rgb))
         masks = [np.asarray(m, dtype=bool) for m in output["masks"]]

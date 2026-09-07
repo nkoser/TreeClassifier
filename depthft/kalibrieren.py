@@ -1,29 +1,29 @@
-"""Den Bildwinkel unserer Kamera rueckwaerts aus den Frames bestimmen.
+"""Determine the field of view of our camera backwards from the frames.
 
-Die 73.7 Grad im Projekt sind ein Vorgabewert im Code, keine Kameraangabe. Der
-Wert geht **linear** in jede Tiefe ein: `d = k / D` mit `k = 0.5 / tan(HFOV/2)`.
-Ist er falsch, ist jede Hoehe um denselben Faktor falsch -- und man sieht es der
-Tiefenkarte nicht an.
+The 73.7 degrees in the project are a default in the code, not a camera
+specification. The value enters every depth **linearly**: `d = k / D` with
+`k = 0.5 / tan(HFOV/2)`. If it is wrong, every height is wrong by the same
+factor -- and you cannot see it in the depth map.
 
-Ohne EXIF laesst er sich trotzdem eingrenzen, wenn die Flughoehe bekannt ist.
-Bei Nadirblick ist die tiefste Stelle im Bild ungefaehr der Boden, also
+Without EXIF it can still be bounded if the flight altitude is known. For a nadir
+view the deepest point in the image is roughly the ground, so
 
     k = boden_faktor * H / p95(1 / D)
 
-`boden_faktor` ist noetig, weil im geschlossenen Kronendach eben **kein** Boden
-zu sehen ist -- die tiefste sichtbare Stelle liegt darueber. Aus den
-FORTRESS-Hoehenmodellen gemessen (rein geometrisch, ohne jedes Modell) liegt sie
-im Median bei 0.917 der Flughoehe, mit einem 5.-bis-95.-Perzentil von 0.82 bis
-0.99. Ohne diese Korrektur faellt der Bildwinkel zu klein aus.
+`boden_faktor` is necessary because in a closed canopy there is precisely **no**
+ground visible -- the deepest visible point lies above it. Measured from the
+FORTRESS height models (purely geometrically, without any model) it lies at 0.917
+of the flight altitude at the median, with a 5th-to-95th percentile of 0.82 to
+0.99. Without this correction the field of view comes out too small.
 
-Das ist kein Ersatz fuer eine echte Kalibrierung, denn es haengt daran, dass das
-Tiefenmodell stimmt. Es hat aber eine eingebaute Probe: **verschiedene
-Flughoehen muessen denselben Bildwinkel ergeben.** Tun sie das, stuetzen sich
-zwei unabhaengige Messungen gegenseitig. Tun sie es nicht, stimmt entweder das
-Modell nicht oder die angegebenen Flughoehen.
+This is no substitute for a real calibration, because it depends on the depth
+model being right. But it has a built-in check: **different flight altitudes have
+to give the same field of view.** If they do, two independent measurements
+support each other. If they do not, either the model or the stated altitudes are
+wrong.
 
-Mit dem so bestimmten Wert werden anschliessend die uebrigen Ordner
-durchgerechnet, deren Flughoehe niemand kennt.
+The value determined this way is then used to compute the remaining folders,
+whose flight altitude nobody knows.
 
     python depthft/kalibrieren.py --bekannt 80m=80 100=100
 """
@@ -54,17 +54,17 @@ def main() -> None:
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_frames"))
     parser.add_argument("--bekannt", nargs="*", default=["80m=80", "100=100"],
-                        metavar="ORDNER=HOEHE", help="Ordner, deren Flughoehe feststeht.")
+                        metavar="FOLDER=ALTITUDE", help="Folders whose altitude is known.")
     parser.add_argument("--boden-perzentil", type=float, default=95.0,
-                        help="Welche Stelle im Bild als Boden gilt.")
+                        help="Which point in the image counts as the ground.")
     parser.add_argument("--boden-faktor", type=float, default=0.917,
-                        help="Tiefe der tiefsten sichtbaren Stelle im Verhaeltnis zur "
-                             "Flughoehe. Aus den FORTRESS-Hoehenmodellen gemessen; 1.0 "
-                             "hiesse, der Boden waere ueberall zu sehen.")
+                        help="Depth of the deepest visible point relative to the flight "
+                             "altitude. Measured from the FORTRESS height models; 1.0 "
+                             "would mean the ground is visible everywhere.")
     parser.add_argument("--modell-skalenfehler", type=float, default=0.945,
-                        help="Wie das Modell auf den Testgebieten im Median danebenliegt. "
-                             "Wird herausgerechnet, damit der eigene Bias nicht als "
-                             "Kameraeigenschaft erscheint.")
+                        help="How far the model is off at the median on the test sites. "
+                             "It is factored out so that our own bias does not appear as "
+                             "a camera property.")
     parser.add_argument("--modelle", nargs="*", default=["feinabgestimmt", "pur"])
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     args = parser.parse_args()
@@ -92,8 +92,8 @@ def main() -> None:
         for ordnername, pfad in frames:
             bild = cv2.cvtColor(cv2.imread(str(pfad)), cv2.COLOR_BGR2RGB)
             D, _ = inferenz.roh(model, bild, device=device)
-            # d = k/D, also p95(d) = k * p95(1/D). Die Kamerakonstante faellt
-            # damit aus einer einzigen Messung heraus, sobald H bekannt ist.
+            # d = k/D, hence p95(d) = k * p95(1/D). The camera constant therefore
+            # falls out of a single measurement as soon as H is known.
             kehrwert = float(np.percentile(1.0 / D, args.boden_perzentil))
             spanne = kehrwert - float(np.percentile(1.0 / D, 2.0))
             zeilen.append({"modell": name, "ordner": ordnername, "frame": pfad.name,
@@ -103,8 +103,8 @@ def main() -> None:
         torch.cuda.empty_cache()
 
     tabelle = pd.DataFrame(zeilen)
-    # Zwei Korrekturen, beide unabhaengig gemessen: die tiefste sichtbare Stelle
-    # ist nicht der Boden, und das Modell hat einen bekannten Restbias.
+    # Two corrections, both measured independently: the deepest visible point is
+    # not the ground, and the model has a known residual bias.
     korrektur = args.boden_faktor / max(args.modell_skalenfehler, 1e-6)
     tabelle["k_geschaetzt"] = korrektur * tabelle["flughoehe_bekannt"] / tabelle["kehrwert_p95"]
     tabelle["fov_geschaetzt"] = tabelle["k_geschaetzt"].apply(
@@ -134,8 +134,8 @@ def main() -> None:
     print(f"\nEmpfohlener Bildwinkel ({args.modelle[0]}): {empfohlen:.1f} Grad, k = {k_empf:.4f}")
     print(f"Bisher angenommen: 73.7 Grad, k = {inferenz.k_von_fov(73.7):.4f} "
           f"-- Tiefen waeren um Faktor {k_empf/inferenz.k_von_fov(73.7):.2f} zu korrigieren.")
-    # Das 5.-bis-95.-Perzentil des Bodenfaktors als Unsicherheitsband: es ist die
-    # groesste bekannte Fehlerquelle dieser Rueckrechnung.
+    # The 5th-to-95th percentile of the ground factor as an uncertainty band: it
+    # is the largest known source of error in this back-calculation.
     for name, faktor in (("Boden gut sichtbar", 0.99), ("Kronendach dicht", 0.82)):
         k_alt = k_empf * faktor / args.boden_faktor
         print(f"  waere {name:22s} ({faktor:.2f}): {inferenz.fov_von_k(k_alt):5.1f} Grad")

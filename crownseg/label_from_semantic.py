@@ -1,27 +1,26 @@
-"""Kronen aus einer semantischen Artkarte beschriften.
+"""Label crowns from a semantic species map.
 
-FORTRESS (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) liefert Artmasken auf
-Pixelebene fuer den Suedschwarzwald bei unter 1.35 cm Bodenaufloesung -- 9 Arten,
-3 Gattungen, Totholz und Waldboden. Was es nicht liefert, sind einzelne Baeume:
-die Labels sagen, *welche* Art an einer Stelle steht, nicht *welcher* Baum.
+FORTRESS (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) supplies pixel-level
+species masks for the southern Black Forest at under 1.35 cm ground sampling --
+9 species, 3 genera, deadwood and forest floor. What it does not supply is
+individual trees: the labels say *which species* stands at a place, not *which
+tree*. That is exactly what our crown segmentation adds. Mask plus species map
+gives labelled crown crops for Central European species, without anyone marking
+a single tree by hand -- the bottleneck this project has been stuck on from the
+start.
 
-Genau das ergaenzt unsere Kronensegmentierung. Maske plus Artkarte ergibt
-beschriftete Kronenausschnitte fuer mitteleuropaeische Arten, ohne dass jemand
-einen einzelnen Baum von Hand markiert -- der Engpass, an dem dieses Projekt
-seit Beginn haengt.
+The assignment is a majority decision within the mask. Two numbers are recorded
+per crown, because they decide usability:
 
-Die Zuordnung ist eine Mehrheitsentscheidung innerhalb der Maske. Zwei Zahlen
-werden je Krone mitgeschrieben, weil sie ueber die Brauchbarkeit entscheiden:
+  abdeckung   Share of the mask that carries a species class at all. Low values
+              mean the crown lies mostly on forest floor or outside the mapped
+              area.
+  reinheit    Share of the majority species in the occupied area. Low values
+              mean the mask covers several species -- either a mis-segmentation
+              or a crown margin.
 
-  abdeckung   Anteil der Maske, der ueberhaupt eine Artklasse traegt. Niedrige
-              Werte heissen, die Krone liegt groesstenteils auf Waldboden oder
-              ausserhalb des kartierten Bereichs.
-  reinheit    Anteil der Mehrheitsart an der belegten Flaeche. Niedrige Werte
-              heissen, die Maske ueberdeckt mehrere Arten -- entweder eine
-              Falschsegmentierung oder ein Kronenrand.
-
-Kronen unter den Schwellen werden verworfen. Ein unsauber beschrifteter
-Trainingsausschnitt ist schaedlicher als ein fehlender.
+Crowns below the thresholds are discarded. A sloppily labelled training crop is
+more harmful than a missing one.
 
     python crownseg/label_from_semantic.py --labels ... --semantic ... --out ...
 """
@@ -43,7 +42,7 @@ from classify import instances_from_labels  # noqa: E402
 
 def assign(labels: np.ndarray, semantic: np.ndarray, background: set[int],
            min_coverage: float, min_purity: float, min_area: int) -> pd.DataFrame:
-    """Jeder Kroneninstanz die Mehrheitsklasse ihrer Flaeche zuordnen."""
+    """Assign every crown instance the majority class of its area."""
     rows = []
     for instance in instances_from_labels(labels, min_area):
         x0, y0, x1, y1 = instance["x0"], instance["y0"], instance["x1"], instance["y1"]
@@ -67,11 +66,11 @@ def main() -> None:
     import cv2
 
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--labels", type=Path, required=True, help="Kronen-Labelkarte (uint16).")
-    parser.add_argument("--semantic", type=Path, required=True, help="Artkarte, gleiche Geometrie.")
+    parser.add_argument("--labels", type=Path, required=True, help="Crown label map (uint16).")
+    parser.add_argument("--semantic", type=Path, required=True, help="Species map, same geometry.")
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--background", type=int, nargs="*", default=[0],
-                        help="Klassenwerte, die keine Art sind (Hintergrund, Waldboden).")
+                        help="Class values that are not a species (background, forest floor).")
     parser.add_argument("--min-coverage", type=float, default=0.5)
     parser.add_argument("--min-purity", type=float, default=0.7)
     parser.add_argument("--min-area", type=int, default=200)

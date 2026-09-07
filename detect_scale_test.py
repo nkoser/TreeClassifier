@@ -1,17 +1,17 @@
-"""Test der Massstabs-Hypothese fuer die Detektion.
+"""Test of the scale hypothesis for detection.
 
-DeepForest ist auf NEON-Daten bei ~10 cm/px trainiert. Wenn die Frames aus
-geringerer Flughoehe stammen als angenommen, erscheinen die Kronen dem Detektor
-zu gross und er zerlegt sie in viele kleine Kandidaten. Dieses Skript prueft das
-direkt: dasselbe Bild wird um verschiedene Faktoren verkleinert (das entspricht
-einem hoeheren Flug), detektiert und die Boxen werden in Originalkoordinaten
-zurueckgerechnet.
+DeepForest is trained on NEON data at ~10 cm/px. If the frames come from a
+lower flight altitude than assumed, the crowns appear too large to the detector
+and it breaks them into many small candidates. This script checks that
+directly: the same image is downscaled by various factors (which corresponds to
+flying higher), detection is run, and the boxes are converted back to original
+coordinates.
 
-Erwartung, falls die Hypothese stimmt: mit kleinerem Faktor sinkt die Anzahl
-Detektionen deutlich, die Boxen werden (in Originalpixeln) groesser und die
-Scores steigen -- bis zu einem Optimum, jenseits dessen Baeume verschwinden.
+Expectation if the hypothesis holds: with a smaller factor the number of
+detections drops markedly, the boxes get larger (in original pixels) and the
+scores rise -- up to an optimum, beyond which trees disappear.
 
-Beispiel:
+Example:
     python detect_scale_test.py --scales 1.0 0.7 0.5 0.35 0.25
 """
 
@@ -35,7 +35,7 @@ DEFAULT_FRAMES = [
 
 
 def detect_at_scale(detector, image_rgb: np.ndarray, scale: float, args) -> pd.DataFrame:
-    """Detektiert auf dem skalierten Bild und rechnet die Boxen zurueck."""
+    """Detect on the scaled image and convert the boxes back."""
     if scale != 1.0:
         resized = cv2.resize(
             image_rgb, None, fx=scale, fy=scale,
@@ -54,9 +54,9 @@ def detect_at_scale(detector, image_rgb: np.ndarray, scale: float, args) -> pd.D
         return pd.DataFrame(columns=["xmin", "ymin", "xmax", "ymax", "score", "box_px_detector", "box_px_original"])
 
     boxes = boxes.copy()
-    # Groesse, wie der Detektor sie gesehen hat (entscheidend fuer seinen Prior) ...
+    # Size as the detector saw it (decisive for its prior) ...
     boxes["box_px_detector"] = np.maximum(boxes["xmax"] - boxes["xmin"], boxes["ymax"] - boxes["ymin"])
-    # ... und dieselbe Box in Originalkoordinaten, damit Massstaebe vergleichbar sind.
+    # ... and the same box in original coordinates, so scales stay comparable.
     for column in ("xmin", "ymin", "xmax", "ymax"):
         boxes[column] = boxes[column] / scale
     boxes["box_px_original"] = boxes["box_px_detector"] / scale
@@ -76,7 +76,7 @@ def draw(image_bgr: np.ndarray, boxes: pd.DataFrame, caption: str, out_path: Pat
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
-    parser.add_argument("--frames", nargs="*", default=DEFAULT_FRAMES, help="Pfade relativ zu --input.")
+    parser.add_argument("--frames", nargs="*", default=DEFAULT_FRAMES, help="Paths relative to --input.")
     parser.add_argument("--scales", type=float, nargs="+", default=[1.0, 0.7, 0.5, 0.35, 0.25])
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_scaletest")
     parser.add_argument("--patch-size", type=int, default=400)

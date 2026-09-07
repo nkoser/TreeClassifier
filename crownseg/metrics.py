@@ -1,17 +1,17 @@
-"""Instanzmasse fuer Kronensegmentierung -- ohne pycocotools.
+"""Instance metrics for crown segmentation -- without pycocotools.
 
-Zwei Zahlen, die verschiedene Fragen beantworten:
+Two numbers that answer different questions:
 
-  F1 @ IoU 0.5   Wie viele Kronen sitzen bei der Schwelle, die man tatsaechlich
-                 faehrt? Das ist die Zahl, die zaehlt, wenn hinterher je Krone
-                 ein Ausschnitt an den Artklassifikator geht.
-  AP @ IoU 0.5   Wie gut ist die Rangfolge ueber alle Schwellen? Unabhaengig von
-                 der Wahl der Konfidenzschwelle und damit vergleichbar mit den
-                 Zahlen, die Paper zu diesem Datensatz berichten.
+  F1 @ IoU 0.5   How many crowns are right at the threshold actually used? That
+                 is the number that counts when a crop per crown later goes to
+                 the species classifier.
+  AP @ IoU 0.5   How good is the ranking across all thresholds? Independent of
+                 the choice of confidence threshold, and therefore comparable
+                 with the numbers papers report on this dataset.
 
-Instanzen werden als `(box, maske im box-Ausschnitt, score)` gefuehrt. Ganze
-2048x2048-Masken je Krone waeren bei 300 Vorhersagen pro Kachel 1.2 GB -- der
-Ausschnitt kostet ein Fuenfzigstel davon.
+Instances are carried as `(box, mask within the box crop, score)`. Full
+2048x2048 masks per crown would be 1.2 GB at 300 predictions per tile -- the
+crop costs a fiftieth of that.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import numpy as np
 @dataclass
 class Instance:
     box: tuple[int, int, int, int]  # x0, y0, x1, y1
-    mask: np.ndarray                # bool, Form (y1-y0, x1-x0)
+    mask: np.ndarray                # bool, shape (y1-y0, x1-x0)
     score: float = 1.0
 
     @property
@@ -33,7 +33,7 @@ class Instance:
 
 
 def instance_from_mask(mask: np.ndarray, score: float = 1.0) -> Instance | None:
-    """Vollbildmaske auf ihren Umriss zuschneiden."""
+    """Crop a full-frame mask down to its own outline."""
     mask = mask.astype(bool)
     ys, xs = np.nonzero(mask)
     if not len(ys):
@@ -59,11 +59,11 @@ def iou(a: Instance, b: Instance) -> float:
 
 
 def match(predictions: list[Instance], truth: list[Instance], threshold: float) -> tuple[np.ndarray, np.ndarray]:
-    """Gierige Zuordnung in der Reihenfolge fallender Konfidenz.
+    """Greedy assignment in order of descending confidence.
 
-    Gibt `(treffer, iou_je_vorhersage)` zurueck, beides in der Reihenfolge der
-    (nach Score sortierten) Vorhersagen. Ein GT wird hoechstens einmal belegt,
-    Mehrfachtreffer zaehlen also als Fehlalarm -- genau wie in COCO.
+    Returns `(treffer, iou_je_vorhersage)`, both in the order of the predictions
+    (sorted by score). A ground-truth crown is claimed at most once, so multiple
+    hits count as false alarms -- exactly as in COCO.
     """
     order = np.argsort([-p.score for p in predictions])
     hits = np.zeros(len(predictions), dtype=bool)
@@ -86,7 +86,7 @@ def match(predictions: list[Instance], truth: list[Instance], threshold: float) 
 
 
 def average_precision(hits: np.ndarray, n_truth: int) -> float:
-    """101-Punkt-Interpolation ueber die Praezisions-Trefferquoten-Kurve (COCO)."""
+    """101-point interpolation over the precision-recall curve (COCO)."""
     if not n_truth:
         return float("nan")
     if not len(hits):
@@ -116,23 +116,23 @@ def evaluate(predictions: list[Instance], truth: list[Instance],
         "f1": 2 * precision * recall / max(1e-9, precision + recall),
         "mittlere_iou": float(ious[hits].mean()) if n_hit else 0.0,
         "ap": average_precision(hits, len(truth)),
-        # Fuer die kachieluebergreifende AP: Treffer und zugehoerige Scores
-        # roh mitgeben. Ohne sie liesse sich nur je Kachel eine AP rechnen und
-        # mitteln -- das ist nicht dasselbe und nicht mit COCO vergleichbar.
+        # For the AP pooled across tiles: pass hits and their scores through raw.
+        # Without them only a per-tile AP could be computed and averaged -- that
+        # is not the same thing and not comparable with COCO.
         "_hits": hits,
         "_scores": np.array([predictions[i].score for i in order], dtype=np.float32),
     }
 
 
 def accumulate(rows: list[dict[str, float]]) -> dict[str, float]:
-    """Kachelweise Zaehlungen zu einer Zahl je Gebiet zusammenziehen.
+    """Collapse per-tile counts into one number per area.
 
-    Die AP wird ueber alle Kacheln gemeinsam gerechnet, nicht je Kachel und dann
-    gemittelt. Der Unterschied ist nicht klein: bei rund 20 Kronen je Kachel ist
-    eine einzelne Kurve kurz und sprunghaft, und der Mittelwert solcher Kurven
-    liegt systematisch unter der gemeinsamen. Nur die gemeinsame Variante ist
-    das, was COCO und die Literatur unter AP50 berichten -- eine frueher hier
-    gerechnete Mittelung war mit veroeffentlichten Zahlen nicht vergleichbar.
+    The AP is computed over all tiles jointly, not per tile and then averaged.
+    The difference is not small: at around 20 crowns per tile a single curve is
+    short and jumpy, and the mean of such curves lies systematically below the
+    joint one. Only the joint variant is what COCO and the literature report as
+    AP50 -- an averaging computed here earlier was not comparable with published
+    numbers.
     """
     n_pred = sum(r["n_pred"] for r in rows)
     n_true = sum(r["n_true"] for r in rows)
@@ -154,7 +154,7 @@ def accumulate(rows: list[dict[str, float]]) -> dict[str, float]:
 
 
 def pooled_ap(rows: list[dict]) -> float:
-    """AP ueber alle Kacheln gemeinsam, nach Konfidenz sortiert."""
+    """AP over all tiles jointly, sorted by confidence."""
     if not rows or "_hits" not in rows[0]:
         return float(np.mean([r["ap"] for r in rows])) if rows else float("nan")
     hits = np.concatenate([r["_hits"] for r in rows if len(r["_hits"])]) if any(

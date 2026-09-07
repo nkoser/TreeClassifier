@@ -1,12 +1,12 @@
-"""Jedes Verfahren aus Phase 2 und 3 in seinen Einzelschritten, auf demselben Ausschnitt.
+"""Every method of phases 2 and 3 in its individual steps, on the same crop.
 
-Die Ergebnistabellen sagen, *dass* ein Verfahren 0.25 oder 0.62 erreicht. Sie
-sagen nicht, *woran* es scheitert. Diese Bilder zeigen bei jedem Verfahren die
-Zwischenstaende -- was es vorschlaegt, was es verwirft und was uebrig bleibt.
+The result tables say *that* a method reaches 0.25 or 0.62. They do not say
+*what* it fails on. These images show the intermediate states of each method --
+what it proposes, what it discards and what remains.
 
-Alle auf demselben Fenster derselben Kachel, sonst vergleicht man am Ende
-Bildausschnitte statt Verfahren. Die Tiefe kommt aus dem Zwischenspeicher
-(`depthcache.py`), Depth Pro muss also nicht laufen.
+All on the same window of the same tile, otherwise you end up comparing image
+crops instead of methods. The depth comes from the cache (`depthcache.py`), so
+Depth Pro does not have to run.
 
     python crownseg/schritte.py --nur sam3 split
 """
@@ -32,7 +32,7 @@ K3 = np.ones((3, 3), np.uint8)
 
 
 # --------------------------------------------------------------------------- #
-# Darstellung
+# Rendering
 # --------------------------------------------------------------------------- #
 
 def kanten(karte: np.ndarray) -> np.ndarray:
@@ -48,7 +48,7 @@ def panel(bgr: np.ndarray, titel: str, farbe=(255, 255, 255)) -> np.ndarray:
 
 
 def flaechen(bild: np.ndarray, masken, seed: int = 3) -> np.ndarray:
-    """Masken als eingefaerbte Flaechen mit weissem Rand."""
+    """Masks as coloured areas with a white outline."""
     aus = bild.copy()
     tint = aus.copy()
     rng = np.random.default_rng(seed)
@@ -90,11 +90,11 @@ def ablegen(args, name: str, teile: list[np.ndarray], spalten: int = 2) -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Daten
+# Data
 # --------------------------------------------------------------------------- #
 
 class Fenster:
-    """Ein Bildausschnitt mit Tiefe und Wahrheit, den alle Verfahren teilen."""
+    """One image crop with depth and truth, shared by every method."""
 
     def __init__(self, args):
         daten = args.prepared / args.split
@@ -113,7 +113,7 @@ class Fenster:
         for i, m in enumerate(masken, 1):
             gt[m.astype(bool)] = i
 
-        # Fenster dorthin, wo die meisten Kronen annotiert sind.
+        # Put the window where most crowns are annotated.
         S, bestes, y0, x0 = args.fenster, -1, 0, 0
         for yy in range(0, voll.shape[0] - S, S // 4):
             for xx in range(0, voll.shape[1] - S, S // 4):
@@ -136,7 +136,7 @@ class Fenster:
 
 
 def als_masken(instanzen, form) -> list[np.ndarray]:
-    """met.Instance-Liste in Vollbildmasken."""
+    """A list of met.Instance into full-frame masks."""
     heraus = []
     for inst in instanzen:
         voll = np.zeros(form, bool)
@@ -150,7 +150,7 @@ def als_masken(instanzen, form) -> list[np.ndarray]:
 
 
 def guete(masken, gt: np.ndarray) -> str:
-    """F1 gegen die Wahrheit -- damit unter jedem Bild steht, was es wert ist."""
+    """F1 against the truth -- so every image carries what it is worth."""
     wahr = [i for i in (met.instance_from_mask(gt == v) for v in np.unique(gt) if v) if i is not None]
     vorher = [i for i in (met.instance_from_mask(np.asarray(m, bool)) for m in masken) if i is not None]
     if not vorher:
@@ -160,11 +160,11 @@ def guete(masken, gt: np.ndarray) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Die Verfahren
+# The methods
 # --------------------------------------------------------------------------- #
 
 def wipfel(chm, args):
-    """Wipfel und Becken wie in segment_prompted.find_peaks."""
+    """Treetops and basins as in segment_prompted.find_peaks."""
     from skimage.measure import label as cc_label
     from skimage.morphology import h_maxima
     from skimage.segmentation import watershed
@@ -180,7 +180,7 @@ def wipfel(chm, args):
 
 
 def schritte_crownnet(f: Fenster, args, device) -> None:
-    """Drei Karten -> Keime aus dem Inneren -> Watershed auf der Randkarte."""
+    """Three maps -> seeds from the interior -> watershed on the margin map."""
     import crownnet as cn
 
     stand = torch.load(args.crownnet_ckpt, map_location=device, weights_only=False)
@@ -207,7 +207,7 @@ def schritte_crownnet(f: Fenster, args, device) -> None:
 
 
 def schritte_prompted(f: Fenster, args, device) -> None:
-    """Tiefe sagt WO, SAM sagt WO DIE GRENZE ist."""
+    """Depth says WHERE, SAM says WHERE THE BOUNDARY is."""
     from transformers import SamModel, SamProcessor
 
     from segment_prompted import pick_candidates, prompt_sam
@@ -242,7 +242,7 @@ def schritte_prompted(f: Fenster, args, device) -> None:
 
 
 def schritte_sam3(f: Fenster, args, device) -> None:
-    """Kachelstufen -> angeschnittene verwerfen -> nach Score zusammenfuehren -> Formfilter."""
+    """Tile levels -> discard cut ones -> merge by score -> shape filter."""
     from transformers import Sam3Model, Sam3Processor
 
     from segment_sam import mask_metrics
@@ -292,8 +292,8 @@ def schritte_sam3(f: Fenster, args, device) -> None:
 
 
 def schritte_split(f: Fenster, args, device, sam3_masken=None) -> None:
-    """Masken, die ueber mehreren Wipfeln liegen, an den Wipfeln aufbrechen."""
-    from crownseg.sam3_depth import split_by_tops  # noqa: F401  (nur der Vollstaendigkeit halber)
+    """Break masks spanning several treetops apart at the treetops."""
+    from crownseg.sam3_depth import split_by_tops  # noqa: F401  (for completeness only)
 
     if sam3_masken is None:
         sam3_masken = schritte_sam3(f, args, device)
@@ -324,7 +324,7 @@ def schritte_split(f: Fenster, args, device, sam3_masken=None) -> None:
 
 
 def schritte_hybrid(f: Fenster, args, device) -> None:
-    """SAM zuerst, Watershed nur auf der Restflaeche -- die Sackgasse im Bild."""
+    """SAM first, watershed only on the remaining area -- the dead end, in a picture."""
     from transformers import Sam3Model, Sam3Processor
 
     from segment_hybrid import residual_crowns
@@ -369,7 +369,7 @@ def schritte_hybrid(f: Fenster, args, device) -> None:
 
 
 def schritte_eomt(f: Fenster, args, device) -> None:
-    """Query-basiert: feste Anfragen, jede mit eigener Maske und eigenem Score."""
+    """Query-based: fixed queries, each with its own mask and its own score."""
     from queryseg import build_model, predict_tiles
 
     modell = build_model("eomt").to(device)
@@ -394,11 +394,11 @@ def schritte_eomt(f: Fenster, args, device) -> None:
 
 
 def schritte_tiefe(f: Fenster, args, device) -> None:
-    """Dasselbe Modell, einmal auf RGB und einmal nur auf der Tiefe.
+    """The same model, once on RGB and once on the depth alone.
 
-    `--depth-only` legt die Tiefenkarte dreimal uebereinander und gibt sie als
-    Bild ins Modell -- das Netz sieht also nie ein Farbpixel. Auf Hain kommt es
-    damit auf F1 0.514 gegen 0.554 mit Bild.
+    `--depth-only` stacks the depth map three times and feeds it to the model as
+    an image -- so the network never sees a colour pixel. On Hain it reaches F1
+    0.514 that way, against 0.554 with the image.
     """
     from queryseg import build_model, predict_tiles
 
@@ -440,12 +440,12 @@ def main() -> None:
     p.add_argument("--stem", default=None)
     p.add_argument("--fenster", type=int, default=768)
     p.add_argument("--out", type=Path, default=Path(__file__).resolve().parent.parent / "results_views_schritte")
-    # Tiefe / Wipfel
+    # Depth / treetops
     p.add_argument("--crown-px", type=float, default=275.0)
     p.add_argument("--smooth-factor", type=float, default=0.045)
     p.add_argument("--gap-percentile", type=float, default=25.0)
     p.add_argument("--peak-prominence", type=float, default=0.10)
-    # Form
+    # Shape
     p.add_argument("--min-area-factor", type=float, default=0.12)
     p.add_argument("--max-area-factor", type=float, default=5.0)
     p.add_argument("--min-compactness", type=float, default=0.25)
@@ -504,7 +504,7 @@ def main() -> None:
                 schritte_eomt(f, args, device)
             elif name == "tiefe":
                 schritte_tiefe(f, args, device)
-        except Exception as fehler:            # ein Verfahren soll die anderen nicht mitreissen
+        except Exception as fehler:            # one method must not take the others down
             print(f"  FEHLER: {type(fehler).__name__}: {fehler}", flush=True)
 
 

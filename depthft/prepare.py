@@ -1,30 +1,29 @@
-"""FORTRESS-Gebiete in ein Bodenraster bringen, aus dem virtuelle Frames entstehen.
+"""Bring FORTRESS sites into a ground raster that virtual frames are cut from.
 
-FORTRESS liefert je Gebiet ein Orthomosaik (0.77 bis 1.57 cm Bodenaufloesung) und
-ein normalisiertes Hoehenmodell (nDSM, Meter ueber Boden). Beides zusammen ist
-die Wahrheit, die Depth Pro fehlt: zu jedem Bildpunkt die tatsaechliche Hoehe.
+FORTRESS supplies one orthomosaic per site (0.77 to 1.57 cm ground sampling) and
+a normalised height model (nDSM, metres above ground). Together they are the
+truth Depth Pro lacks: the actual height for every pixel.
 
-Nur direkt trainieren laesst sich damit nicht. Ein Orthomosaik ist kein Foto --
-es hat keine Kamera, keinen Bildwinkel, keine Tiefe. Die entsteht erst durch eine
-Annahme: haenge eine Nadirkamera in Hoehe H ueber den Bestand, dann ist die Tiefe
-an jedem Punkt
+You cannot train on it directly, though. An orthomosaic is not a photograph -- it
+has no camera, no field of view, no depth. Depth only arises from an assumption:
+hang a nadir camera at height H above the stand, and the depth at every point is
 
     d = H - nDSM
 
-und die Bodenaufloesung des so entstehenden Bildes ist H / f_px. Aus einem Gebiet
-werden damit beliebig viele Frames in beliebiger Flughoehe -- mit Tiefenkarte.
+and the ground sampling of the resulting image is H / f_px. A site thus yields
+arbitrarily many frames at any flight altitude -- with a depth map.
 
-Dieses Skript macht den teuren Teil einmal: die 40 GB Orthos einlesen, auf ein
-gemeinsames Raster mit fester Aufloesung bringen (Vorgabe 2 cm, fein genug fuer
-jede spaeter gewuenschte Flughoehe) und das nDSM darauf einpassen. Die Frames
-schneidet dann `dataset.py` im Sekundenbereich daraus.
+This script does the expensive part once: read the 40 GB of orthos, bring them
+onto a common raster at a fixed resolution (default 2 cm, fine enough for any
+flight altitude wanted later) and fit the nDSM onto it. `dataset.py` then cuts
+the frames out of it in seconds.
 
-Aufgeteilt wird nach **Gebieten**, nicht nach Ausschnitten: Ausschnitte desselben
-Bestandes sind sich zu aehnlich, eine zufaellige Aufteilung wuerde die Guete
-schoenrechnen. Dasselbe Prinzip wie in `distill_height.py`.
+The split is by **site**, not by crop: crops of the same stand are too similar,
+and a random split would flatter the result. The same principle as in
+`distill_height.py`.
 
     python depthft/prepare.py --sites CFB014 CFB019
-    python depthft/prepare.py                          # alle 47 Gebiete
+    python depthft/prepare.py                          # all 47 sites
 """
 
 from __future__ import annotations
@@ -36,17 +35,17 @@ from pathlib import Path
 import cv2
 import numpy as np
 
-# Alle 9 Gebiete gehen in die Auswertung, nicht ins Training. Der Rest trainiert.
+# Every 9th site goes into evaluation, not into training. The rest trains.
 VAL_JEDES = 9      # Index % VAL_JEDES == 0  -> val
 TEST_VERSATZ = 4   # Index % VAL_JEDES == TEST_VERSATZ -> test
 
-MAX_HOEHE_M = 60.0   # Deckel fuer das nDSM; hoeher wird im Schwarzwald kein Baum.
+MAX_HOEHE_M = 60.0   # cap for the nDSM; no tree in the Black Forest is taller
 
 
 def render_site(ortho: Path, ndsm_pfad: Path, base_gsd: float, *,
                 null_schwelle: float = 0.01, nullen_verwerfen: bool = True
                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, dict]:
-    """Ortho und nDSM auf ein gemeinsames Raster mit `base_gsd` Metern pro Pixel."""
+    """Ortho and nDSM onto a common raster at `base_gsd` metres per pixel."""
     import rasterio
     from affine import Affine
     from rasterio.enums import Resampling
@@ -56,9 +55,9 @@ def render_site(ortho: Path, ndsm_pfad: Path, base_gsd: float, *,
         gsd = abs(src.transform.a)
         breite = max(1, int(round(src.width * gsd / base_gsd)))
         hoehe = max(1, int(round(src.height * gsd / base_gsd)))
-        # Resampling.average statt nearest: beim Verkleinern um Faktor 2 bis 8
-        # wuerde nearest jedes zweite bis achte Pixel wegwerfen und Aliasing
-        # erzeugen -- Kronenstruktur, die es so nie gab.
+        # Resampling.average rather than nearest: when downscaling by a factor of
+        # 2 to 8, nearest would throw away every second to eighth pixel and create
+        # aliasing -- crown structure that never existed.
         rgb = np.transpose(src.read((1, 2, 3), out_shape=(3, hoehe, breite),
                                     resampling=Resampling.average), (1, 2, 0))
         rgb = np.ascontiguousarray(rgb.astype(np.uint8))
@@ -83,25 +82,25 @@ def render_site(ortho: Path, ndsm_pfad: Path, base_gsd: float, *,
         )
         ndsm_gsd = abs(nsrc.transform.a)
 
-    # Ungueltig ist alles ohne Bild, ohne Hoehenwert oder mit unsinniger Hoehe.
-    # Leicht negative Werte sind normale Rauheit im Bodenmodell und werden auf 0
-    # gezogen; stark negative deuten auf Fehler in der Photogrammetrie.
+    # Invalid is anything without an image, without a height value, or with a
+    # nonsensical height. Slightly negative values are normal roughness in the
+    # terrain model and are pulled to 0; strongly negative ones indicate errors.
     gueltig &= np.isfinite(ndsm) & (ndsm > -3.0) & (ndsm < MAX_HOEHE_M * 1.5)
 
-    # Exakte Nullen sind Fuellung, nicht Gelaende. In den FORTRESS-Hoehenmodellen
-    # ist 0.00 der mit Abstand haeufigste Einzelwert -- 9 bis 27 % der Flaeche,
-    # in grossen zusammenhaengenden Bloecken, unter denen im Orthomosaik
-    # geschlossener Wald steht. Echter Boden streut um 0 herum, er trifft ihn
-    # nicht Zehntausende Male exakt. Diese Flaechen als Boden zu lernen waere
-    # genau die falsche Wahrheit: Kronen auf Hoehe null.
-    # Der Preis ist, dass echte Bodenpixel mit verworfen werden -- die tragen
-    # aber wenig, waehrend falsch beschrifteter Wald unmittelbar schadet.
+    # Exact zeros are fill, not terrain. In the FORTRESS height models 0.00 is by
+    # far the most frequent single value -- 9 to 27 % of the area, in large
+    # contiguous blocks under which the orthomosaic shows closed forest. Real
+    # ground scatters around 0, it does not hit it exactly tens of thousands of
+    # times. Learning those areas as ground would be exactly the wrong truth:
+    # crowns at height zero.
+    # The price is that real ground pixels get discarded too -- but they
+    # contribute little, while mislabelled forest does immediate harm.
     anteil_null = 0.0
     if nullen_verwerfen:
         fuellung = np.abs(np.nan_to_num(ndsm, nan=1e3)) < null_schwelle
         anteil_null = float(fuellung.mean())
-        # Ein paar Pixel weiten: an der Kante mischt die Neuabtastung Fuellung
-        # mit echten Werten und erzeugt einen Saum knapp ueber der Schwelle.
+        # Dilate by a few pixels: at the edge the resampling mixes fill with real
+        # values and creates a seam just above the threshold.
         fuellung = cv2.dilate(fuellung.astype(np.uint8), np.ones((9, 9), np.uint8)) > 0
         gueltig &= ~fuellung
 
@@ -128,16 +127,16 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--root", type=Path, default=Path("/scratch/shared/nik/data/fortress"))
     parser.add_argument("--out", type=Path, default=Path("/scratch/shared/nik/data/fortress/depthft"))
-    parser.add_argument("--sites", nargs="*", default=None, help="Vorgabe: alle.")
+    parser.add_argument("--sites", nargs="*", default=None, help="Default: all of them.")
     parser.add_argument("--base-gsd", type=float, default=0.02,
-                        help="Aufloesung des Bodenrasters in m/px. Feiner als jede "
-                             "spaeter gebrauchte Flughoehe verlangt, aber nicht so fein, "
-                             "dass die Ablage explodiert.")
+                        help="Resolution of the ground raster in m/px. Finer than any "
+                             "flight altitude needed later demands, but not so fine "
+                             "that the storage explodes.")
     parser.add_argument("--jpeg-quality", type=int, default=95)
     parser.add_argument("--null-schwelle", type=float, default=0.01,
-                        help="Hoehen darunter gelten als Fuellung, nicht als Boden.")
+                        help="Heights below this count as fill, not as ground.")
     parser.add_argument("--nullen-behalten", dest="nullen_verwerfen", action="store_false",
-                        help="Fuellflaechen nicht verwerfen -- nur zum Vergleichen.")
+                        help="Keep the fill areas -- for comparison only.")
     parser.add_argument("--overwrite", action="store_true")
     args = parser.parse_args()
 
@@ -150,8 +149,8 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "raster").mkdir(exist_ok=True)
 
-    # Der Split haengt an der vollstaendigen Gebietsliste, nicht an --sites.
-    # Sonst haette ein Teillauf eine andere Aufteilung als der volle.
+    # The split depends on the complete site list, not on --sites. Otherwise a
+    # partial run would have a different split from the full one.
     split_von = {}
     for i, site in enumerate(alle):
         rest = i % VAL_JEDES
@@ -176,8 +175,8 @@ def main() -> None:
                                                nullen_verwerfen=args.nullen_verwerfen)
         cv2.imwrite(str(ziel), cv2.cvtColor(rgb, cv2.COLOR_RGB2BGR),
                     [cv2.IMWRITE_JPEG_QUALITY, args.jpeg_quality])
-        # Hoehe in Zentimetern als uint16: 1 cm Aufloesung reicht fuer Baumhoehen
-        # bei Weitem und kostet die Haelfte von float32.
+        # Height in centimetres as uint16: 1 cm resolution is ample for tree
+        # heights and costs half of float32.
         cv2.imwrite(str(args.out / "raster" / f"{site}_ndsm.png"),
                     np.round(ndsm * 100.0).astype(np.uint16))
         cv2.imwrite(str(args.out / "raster" / f"{site}_valid.png"),

@@ -1,33 +1,31 @@
-"""BAMFORESTS als Trainingsquelle fuer einzelne Baumkronen.
+"""BAMFORESTS as a training source for individual tree crowns.
 
-Der Datensatz (Troles et al. 2024, Remote Sensing 16(11), 1935; CC BY-NC-SA 4.0)
-liefert das, was dem Projekt bisher gefehlt hat: echte, handdigitalisierte
-Instanzgrenzen. 2456 Kacheln zu 2048x2048 px aus vier Waldgebieten um Bamberg,
-92 445 Kronenpolygone im COCO-Format, eine einzige Klasse `tree`.
+The dataset (Troles et al. 2024, Remote Sensing 16(11), 1935; CC BY-NC-SA 4.0)
+supplies what the project had been missing: real, hand-digitised instance
+boundaries. 2456 tiles of 2048x2048 px from four forest areas around Bamberg,
+92,445 crown polygons in COCO format, a single class `tree`.
 
-    train   1439 Kacheln  58 228 Kronen   Stadtwald, Tretzendorf
-    val      382 Kacheln  15 177 Kronen   Stadtwald, Tretzendorf
-    test1    313 Kacheln   6 720 Kronen   Hain          <- fremdes Gebiet
-    test2    322 Kacheln  12 320 Kronen   Stadtwald, Tretzendorf
+    train   1439 tiles  58,228 crowns   Stadtwald, Tretzendorf
+    val      382 tiles  15,177 crowns   Stadtwald, Tretzendorf
+    test1    313 tiles   6,720 crowns   Hain          <- unseen area
+    test2    322 tiles  12,320 crowns   Stadtwald, Tretzendorf
 
-`test1` ist der einzige echte Uebertragungstest: Hain kommt weder im Training
-noch in der Validierung vor. `test2` misst nur, wie gut die bekannten Gebiete
-sitzen -- beide Zahlen getrennt berichten, sonst sieht das Ergebnis besser aus
-als es ist.
+`test1` is the only real transfer test: Hain occurs in neither training nor
+validation. `test2` only measures how well the known areas fit -- report both
+numbers separately, otherwise the result looks better than it is.
 
-Unterschied zu `crownnet.py`: dort wurden die Polygone zu einer einzigen
-Labelkarte verschmolzen (`fillPoly` mit laufendem Index), wobei sich
-ueberlappende Kronen gegenseitig ueberschreiben -- bei ineinandergreifenden
-Laubbaeumen ist das die Regel, nicht die Ausnahme. Hier bleibt jede Krone eine
-eigene Maske; nichts geht verloren.
+Difference from `crownnet.py`: there the polygons were merged into a single
+label map (`fillPoly` with a running index), where overlapping crowns overwrite
+each other -- with interlocking broadleaves that is the rule, not the exception.
+Here every crown stays its own mask; nothing is lost.
 
-Aufbereitung (einmalig, ~2456 TIFFs a 16 MB):
+Preparation (once, ~2456 TIFFs of 16 MB each):
 
     python crownseg/bamforests.py --split all
 
-schreibt je Split `<stem>.jpg` in Originalaufloesung plus eine gemeinsame
-`annotations.json` (Stem -> Liste von Polygonen). Die TIFFs selbst haben vier
-Baender; das vierte ist der Alphakanal des Orthomosaiks und wird verworfen.
+writes `<stem>.jpg` at original resolution per split, plus one shared
+`annotations.json` (stem -> list of polygons). The TIFFs themselves have four
+bands; the fourth is the alpha channel of the orthomosaic and is discarded.
 """
 
 from __future__ import annotations
@@ -42,12 +40,11 @@ import cv2
 import numpy as np
 import torch
 
-# OpenCV startet je Prozess einen eigenen Threadpool. In geforkten
-# DataLoader-Workern kann der mit dem Threadpool des Elternprozesses
-# verklemmen -- zwei Trainingslaeufe sind daran nach 17 bzw. 16 Epochen
-# haengengeblieben (Haupt- und Worker-Prozesse alle in `do_poll`, GPU im
-# Leerlauf, SLURM meldete weiterhin RUNNING). Ein Thread je Worker reicht
-# ohnehin, die Parallelitaet kommt aus der Zahl der Worker.
+# OpenCV starts its own thread pool per process. In forked DataLoader workers
+# that can deadlock against the parent process pool -- two training runs hung on
+# this after 17 and 16 epochs (main and worker processes all in `do_poll`, GPU
+# idle, while SLURM kept reporting RUNNING). One thread per worker is plenty
+# anyway; the parallelism comes from the number of workers.
 cv2.setNumThreads(0)
 
 BAMFORESTS = Path(f"/scratch/shared/{os.environ.get('USER', 'nik')}/data/bamforests")
@@ -61,7 +58,7 @@ SPLITS = {
 
 
 # --------------------------------------------------------------------------- #
-# Aufbereitung
+# Preparation
 # --------------------------------------------------------------------------- #
 
 
@@ -77,7 +74,7 @@ def _convert_tile(job: tuple[str, str]) -> str | None:
 
 
 def prepare_split(root: Path, split: str, out_root: Path, workers: int) -> int:
-    """TIFF-Kacheln nach JPEG umschreiben und die Polygone je Kachel ablegen."""
+    """Rewrite the TIFF tiles as JPEG and store the polygons per tile."""
     annotation_file, image_dir = SPLITS[split]
     data = json.loads((root / "coco2048" / "annotations" / annotation_file).read_text())
     image_root = root / "coco2048" / image_dir
@@ -89,7 +86,7 @@ def prepare_split(root: Path, split: str, out_root: Path, workers: int) -> int:
     for annotation in data["annotations"]:
         stem = names.get(annotation["image_id"])
         if stem is not None:
-            # Immer genau ein Ring je Krone -- geprueft, kein Multipolygon im Satz.
+            # Always exactly one ring per crown -- checked, no multipolygon in the set.
             polygons[stem].append(annotation["segmentation"][0])
 
     jobs = [
@@ -107,12 +104,12 @@ def prepare_split(root: Path, split: str, out_root: Path, workers: int) -> int:
 
 
 # --------------------------------------------------------------------------- #
-# Datensatz
+# Dataset
 # --------------------------------------------------------------------------- #
 
 
 def load_tile(directory: Path, stem: str, index: dict) -> tuple[np.ndarray, list[np.ndarray]]:
-    """Ganze Kachel plus Polygone -- fuer Auswertung und Anschauen."""
+    """A whole tile plus its polygons -- for evaluation and for looking at."""
     image = cv2.cvtColor(cv2.imread(str(directory / f"{stem}.jpg")), cv2.COLOR_BGR2RGB)
     rings = [np.asarray(p, dtype=np.float32).reshape(-1, 2) for p in index[stem]]
     return image, rings
@@ -120,11 +117,11 @@ def load_tile(directory: Path, stem: str, index: dict) -> tuple[np.ndarray, list
 
 def masks_from_rings(rings: list[np.ndarray], height: int, width: int,
                      min_area: int, min_visible: float) -> tuple[np.ndarray, np.ndarray]:
-    """Polygone in Einzelmasken rastern und angeschnittene Kronen aussortieren.
+    """Rasterise polygons into individual masks and drop crowns that are cut off.
 
-    Eine Krone, von der nur noch ein Zipfel im Ausschnitt liegt, ist als Ziel
-    schaedlich: das Netz lernte, Bruchstuecke fuer vollstaendige Kronen zu
-    halten. Deshalb faellt alles unter `min_visible` der Originalflaeche raus.
+    A crown of which only a sliver lies inside the crop is harmful as a target:
+    the network learned to take fragments for complete crowns. So everything
+    below `min_visible` of the original area is dropped.
     """
     masks, boxes = [], []
     for ring in rings:
@@ -153,11 +150,11 @@ def masks_from_rings(rings: list[np.ndarray], height: int, width: int,
 
 
 class CrownCrops(torch.utils.data.Dataset):
-    """Zufaellige Ausschnitte einer Kachel mit je einer Maske pro Krone.
+    """Random crops of a tile, with one mask per crown.
 
-    Der Massstab wird beim Training gejittert (`scale_jitter`). Das kostet auf
-    BAMFORESTS selbst kaum Genauigkeit, ist aber die einzige Vorsorge fuer die
-    spaetere Anwendung auf Nik's Drohnenframes, deren GSD nur grob bekannt ist.
+    The scale is jittered during training (`scale_jitter`). On BAMFORESTS itself
+    that costs hardly any accuracy, but it is the only precaution for the later
+    application to our own drone frames, whose GSD is only roughly known.
     """
 
     def __init__(self, root: Path, split: str, crop: int, length: int, augment: bool,
@@ -170,9 +167,9 @@ class CrownCrops(torch.utils.data.Dataset):
         self.crop, self.length, self.augment = crop, length, augment
         self.scale_jitter, self.min_area, self.min_visible = scale_jitter, min_area, min_visible
         self.depth_dir = depth_dir
-        # Nur die Hoehenkarte, dreifach kopiert. So bleibt die vortrainierte
-        # Eingangsfaltung unveraendert und der Vergleich gegen den RGB-Lauf
-        # misst wirklich nur den Informationsgehalt der Tiefe.
+        # The height map only, copied three times. That leaves the pretrained
+        # input convolution unchanged, and the comparison against the RGB run
+        # really measures only the information content of the depth.
         self.depth_only = depth_only
 
     def __len__(self) -> int:
@@ -201,12 +198,12 @@ class CrownCrops(torch.utils.data.Dataset):
             rings = [ring * factor for ring in rings]
 
         if self.augment:
-            # Helligkeit, Kontrast, Farbstich. Der Trainingsverlust fiel ohne das
-            # binnen zwei Epochen auf ein Sechstel des Validierungsverlusts --
-            # das Netz merkte sich die Belichtung der beiden Trainingsgebiete.
-            # Nur die Farbkanaele -- die Tiefe hat keine Belichtung, eine
-            # Helligkeitsstoerung darauf waere eine Hoehenstoerung. Im
-            # Tiefe-allein-Betrieb entfaellt sie deshalb ganz.
+            # Brightness, contrast, colour cast. Without this the training loss
+            # fell to a sixth of the validation loss within two epochs -- the
+            # network was memorising the exposure of the two training areas.
+            # Colour channels only -- depth has no exposure, and a brightness
+            # perturbation on it would be a height perturbation. In depth-only
+            # mode it is therefore dropped entirely.
             if self.depth_only:
                 gain, bias, tint = 1.0, 0.0, np.ones(3)
             else:
@@ -233,7 +230,7 @@ class CrownCrops(torch.utils.data.Dataset):
     def __getitem__(self, index: int):
         seed = index if not self.augment else (torch.initial_seed() + index) % (2**32)
         rng = np.random.default_rng(seed)
-        for _ in range(8):  # leere Ausschnitte (Wege, Lichtungen) neu ziehen
+        for _ in range(8):  # redraw empty crops (paths, clearings)
             patch, masks, boxes = self._sample(rng)
             if len(boxes):
                 break

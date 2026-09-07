@@ -1,21 +1,20 @@
-"""Kronen nach Merkmalsvektoren gruppieren -- ohne Artlabels.
+"""Group crowns by feature vector -- without species labels.
 
-Der DINOvTree-Kopf kennt 14 kanadische Klassen. Auf mitteleuropaeischen
-Bestaenden gibt es fuer die meisten Baeume keine richtige Antwort: ein
-Kiefernbestand wird zu Gelb-Birke, weil *Pinus sylvestris* im Label-Satz fehlt.
-Die Merkmale selbst sind davon unberuehrt -- sie beschreiben das Aussehen der
-Krone, nicht ihren Namen.
+The DINOvTree head knows 14 Canadian classes. On Central European stands there
+is no correct answer for most trees: a pine stand becomes yellow birch, because
+*Pinus sylvestris* is missing from the label set. The features themselves are
+untouched by that -- they describe the appearance of the crown, not its name.
 
-Dass das traegt, ist gemessen. Auf Quebec Zone 3, geclustert ohne die Labels und
-danach verglichen, erreicht das Verfahren denselben Adjusted Rand Index wie der
-beschriftete Klassifikator (0.764 gegen 0.762) und 86 bis 89 % Reinheit. Der
-praktische Gewinn: zwoelf bis zwanzig Gruppen benennen statt Tausende Baeume.
+That this works is measured. On Quebec zone 3, clustered without the labels and
+compared afterwards, the method reaches the same adjusted Rand index as the
+labelled classifier (0.764 against 0.762) and 86 to 89 % purity. The practical
+gain: name twelve to twenty groups instead of thousands of trees.
 
-Unterschied zu `cluster_crowns.py` im Wurzelverzeichnis: der Ausschnitt wird je
-Krone aus ihrem eigenen Durchmesser bestimmt (Faktor 2.4, auf Quebec gemessenes
-Optimum) statt fest vorgegeben. Ein fester Ausschnitt zeigt bei kleinen Kronen
-ueberwiegend Nachbarbaeume -- auf Quebec faellt die Reinheit von 86.1 % auf
-71.2 %, wenn die Krone nur 1.6 % statt 17 % der Flaeche fuellt.
+Difference from `cluster_crowns.py` in the repository root: the crop is derived
+per crown from its own diameter (factor 2.4, the optimum measured on Quebec)
+instead of being fixed. A fixed crop shows mostly neighbouring trees for small
+crowns -- on Quebec the purity falls from 86.1 % to 71.2 % when the crown fills
+only 1.6 % of the area instead of 17 %.
 
     python crownseg/cluster.py --labels results_sam3/multiskala --clusters 12
 """
@@ -55,11 +54,11 @@ def contact_sheet(thumbs: list[np.ndarray], columns: int, title: str) -> np.ndar
 
 
 def center_per_group(features: np.ndarray, groups: pd.Series) -> np.ndarray:
-    """Ordnerweise zentrieren -- einfache Korrektur der Aufnahmebedingung.
+    """Centre per folder -- a simple correction for the capture condition.
 
-    Jeder Flug hat eigene Beleuchtung, Belichtung und Kompression, und dieser
-    Versatz ist groesser als der Unterschied zwischen zwei Baumarten. Ohne die
-    Korrektur clustern die Merkmale nach Ordner statt nach Art.
+    Every flight has its own illumination, exposure and compression, and that
+    offset is larger than the difference between two tree species. Without the
+    correction the features cluster by folder instead of by species.
     """
     centered = features.copy()
     for value in groups.unique():
@@ -87,7 +86,7 @@ def main() -> None:
     parser.add_argument("--scales", nargs="*", default=[])
     parser.add_argument("--min-area", type=int, default=200)
     parser.add_argument("--min-diameter-px", type=float, default=25.0)
-    parser.add_argument("--no-center", action="store_true", help="Ordnerweises Zentrieren abschalten.")
+    parser.add_argument("--no-center", action="store_true", help="Turn off the per-folder centring.")
     parser.add_argument("--sheet-columns", type=int, default=12)
     parser.add_argument("--sheet-samples", type=int, default=36)
     parser.add_argument("--batch-size", type=int, default=16)

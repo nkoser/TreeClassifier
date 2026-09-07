@@ -1,17 +1,16 @@
-"""Artklassifikation auf segmentierten Kronen statt auf Detektor-Boxen.
+"""Species classification on segmented crowns instead of on detector boxes.
 
-Bindet die Segmentierung (segment_sam3.py / segment_hybrid.py / merge_crowns.py)
-an DINOvTree an. Der entscheidende Gewinn gegenueber infer_species.py: die
-Crop-Groesse kommt jetzt aus dem **gemessenen Kronendurchmesser** statt aus einer
-Flughoehen-Schaetzung.
+Connects the segmentation (segment_sam3.py / segment_hybrid.py /
+merge_crowns.py) to DINOvTree. The decisive gain over infer_species.py: the crop
+size now comes from the **measured crown diameter** instead of from an estimated
+flight altitude.
 
-Im Training lag der Baum in einem 9.73-m-Fenster und fuellte davon grob ein
-Drittel bis die Haelfte. Genau dieses Verhaeltnis stellt --crop-factor her: der
-Ausschnitt ist ein Vielfaches des Kronendurchmessers, unabhaengig von Flughoehe,
-Kamera und Massstab. Damit entfaellt die groesste Unsicherheit der bisherigen
-Pipeline.
+In training the tree sat in a 9.73 m window and filled roughly a third to a half
+of it. --crop-factor reproduces exactly that ratio: the crop is a multiple of
+the crown diameter, independently of flight altitude, camera and scale. That
+removes the largest uncertainty of the previous pipeline.
 
-Beispiel:
+Example:
     python classify_crowns.py --segments results_sam3/fix2 --out results_arten
 """
 
@@ -40,7 +39,7 @@ from infer_species import (
 
 
 def crown_records(labels: np.ndarray) -> pd.DataFrame:
-    """Schwerpunkt und Durchmesser je Instanz, direkt aus der Labelkarte."""
+    """Centroid and diameter per instance, straight from the label map."""
     from skimage.measure import regionprops
 
     records = []
@@ -60,7 +59,7 @@ def crown_records(labels: np.ndarray) -> pd.DataFrame:
 
 def draw_species(image_bgr: np.ndarray, labels: np.ndarray, crowns: pd.DataFrame, class_names: list[str],
                  alpha: float, caption: str) -> np.ndarray:
-    """Kronenpolygone in der Farbe ihrer vorhergesagten Art."""
+    """Crown polygons in the colour of their predicted species."""
     color_of = {name: PALETTE[i % len(PALETTE)][::-1] for i, name in enumerate(class_names)}
 
     tint = np.zeros((*labels.shape, 3), dtype=np.uint8)
@@ -92,17 +91,17 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--segments", type=Path, default=REPO_ROOT / "results_sam3" / "fix2",
-                        help="Verzeichnis mit den *_labels.png der Segmentierung.")
+                        help="Directory holding the *_labels.png of the segmentation.")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_arten")
     parser.add_argument("--ckpt", type=Path,
                         default=Path("/scratch/shared/nik/data/treeclf/checkpoints/dinovtreeb_quebectrees.pth"))
     parser.add_argument("--categories", type=Path, default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
 
     parser.add_argument("--crop-factor", type=float, default=2.5,
-                        help="Ausschnittsgroesse als Vielfaches des Kronendurchmessers. Das Training "
-                             "zeigte den Baum in etwa diesem Verhaeltnis zum Bildausschnitt.")
+                        help="Crop size as a multiple of the crown diameter. Training showed the "
+                             "tree at roughly this ratio to the image crop.")
     parser.add_argument("--min-diameter-px", type=float, default=30.0,
-                        help="Kleinere Kronen ueberspringen -- zu wenig Bildinformation.")
+                        help="Skip smaller crowns -- too little image information.")
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--alpha", type=float, default=0.4)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))

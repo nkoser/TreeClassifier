@@ -1,26 +1,25 @@
-"""Den wahren Bildmassstab der eigenen Frames aus der Modellantwort schaetzen.
+"""Estimate the true image scale of our own frames from the model response.
 
-Die Flughoehen der meisten Ordner sind unbekannt, und der Massstab entscheidet
-alles: BAMFORESTS hat 1.70 cm/px, und ein Modell, das darauf trainiert wurde,
-sucht Kronen von rund 258 px. Liegt der Massstab daneben, findet es nichts oder
-zerlegt jede Krone.
+The flight altitudes of most folders are unknown, and the scale decides
+everything: BAMFORESTS has 1.70 cm/px, and a model trained on it looks for
+crowns of around 258 px. If the scale is off, it finds nothing or breaks every
+crown apart.
 
-Mask R-CNN eignet sich hier als Messgeraet, gerade weil es eine feste
-Groessenannahme hat: seine Ankerleiter deckt 64 bis 1024 px ab, und bei falschem
-Massstab bricht die Konfidenz ein. Ein query-basiertes Modell taugt dafuer
-schlecht -- es liefert bei jedem Massstab etwas.
+Mask R-CNN suits the role of measuring instrument here precisely because it has
+a fixed size assumption: its anchor ladder covers 64 to 1024 px, and at the
+wrong scale its confidence collapses. A query-based model is poorly suited --
+it delivers something at any scale.
 
-Gemessen wird je Ordner ueber mehrere Frames und mehrere Massstaebe: wie viele
-sichere Instanzen kommen heraus, und wie hoch ist deren mittlere Konfidenz. Das
-Maximum davon zeigt den Massstab, bei dem die Kronen die gelernte Groesse haben;
-daraus folgt rueckwaerts die Bodenaufloesung und die Flughoehe.
+Measurement runs per folder over several frames and several scales: how many
+confident instances come out, and how high is their mean confidence. The maximum
+of that indicates the scale at which the crowns have the size that was learned;
+from it the ground sampling and the flight altitude follow backwards.
 
-Entscheidend fuer die Vergleichbarkeit: verglichen wird ein fester **Boden**-
-ausschnitt, nicht ein festes Pixelfenster. Ein 1024-px-Fenster im halbierten Bild
-zeigt doppelt so viel Wald wie im Originalbild -- wer so vergleicht, misst die
-Zahl der sichtbaren Baeume und nicht die Passgenauigkeit des Massstabs. Hier wird
-deshalb immer derselbe Bildausschnitt genommen und nur seine Aufloesung
-veraendert: dieselben Baeume, unterschiedlich gross.
+Decisive for comparability: what is compared is a fixed **ground** footprint,
+not a fixed pixel window. A 1024 px window in a halved image shows twice as much
+forest as in the original -- comparing that way measures the number of visible
+trees and not how well the scale fits. So the same image region is always taken
+here and only its resolution is changed: the same trees, at different sizes.
 
     python crownseg/scale_probe.py --scales 0.5 0.75 1.0 1.5 2.0 3.0
 """
@@ -62,7 +61,7 @@ def main() -> None:
     parser.add_argument("--scales", type=float, nargs="*",
                         default=[0.25, 0.35, 0.5, 0.7, 1.0, 1.4, 2.0, 3.0, 4.5])
     parser.add_argument("--ground", type=int, default=1024,
-                        help="Kantenlaenge des Bodenausschnitts in Originalpixeln.")
+                        help="Edge length of the ground footprint in original pixels.")
     parser.add_argument("--frames-per-folder", type=int, default=3)
     parser.add_argument("--out", type=Path, default=Path("results_crownseg/massstab.csv"))
     parser.add_argument("--hfov-deg", type=float, default=73.7)
@@ -87,11 +86,11 @@ def main() -> None:
                 image = cv2.imread(str(frame_path))
                 if image is None:
                     continue
-                # Immer derselbe Bodenausschnitt aus dem Originalbild ...
+                # Always the same ground footprint from the original image ...
                 ground = min(args.ground, image.shape[0], image.shape[1])
                 cy, cx = image.shape[0] // 2, image.shape[1] // 2
                 patch = image[cy - ground // 2 : cy + ground // 2, cx - ground // 2 : cx + ground // 2]
-                # ... nur seine Aufloesung aendert sich.
+                # ... only its resolution changes.
                 size = max(64, int(round(ground * scale)))
                 work = cv2.resize(patch, (size, size),
                                   interpolation=cv2.INTER_AREA if scale < 1 else cv2.INTER_CUBIC)
@@ -113,8 +112,8 @@ def main() -> None:
     print(f"{'Ordner':10s} {'Massstab':>9s} {'Kronen':>8s} {'Konfidenz':>10s} "
           f"{'GSD cm/px':>10s} {'Flughoehe m':>12s}")
     for name, group in table.groupby("ordner"):
-        # Kronenzahl mal Konfidenz: viele sichere Instanzen schlagen wenige
-        # sehr sichere, und beides schlaegt viele unsichere.
+        # Crown count times confidence: many confident instances beat a few very
+        # confident ones, and both beat many uncertain ones.
         best = group.loc[(group["kronen"] * group["konfidenz"]).idxmax()]
         gsd = BAM_GSD_CM / best["massstab"]
         altitude = gsd / 100 * args.frame_width / (2 * np.tan(np.radians(args.hfov_deg) / 2))

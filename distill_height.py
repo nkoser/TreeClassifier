@@ -1,26 +1,26 @@
-"""Stufe 1: gemessene Parallaxe in ein Einzelbild-Netz destillieren.
+"""Stage 1: distil measured parallax into a single-image network.
 
-Die Parallaxe braucht mehrere Frames und faellt damit fuer den spaeteren Betrieb
-aus. Ihr Wissen laesst sich aber in Gewichte ueberfuehren -- genau so werden
-monokulare Tiefenmodelle gebaut: trainiert auf Stereo, angewendet auf ein Bild.
+Parallax needs several frames and is therefore unavailable in later operation.
+Its knowledge can be transferred into weights, though -- that is exactly how
+monocular depth models are built: trained on stereo, applied to one image.
 
-Aufbau:
-  Backbone   DINOv3 ViT-B/16 aus dem DINOvTree-Checkpoint, eingefroren.
-             Metas Originalgewichte werden nicht gebraucht, der Checkpoint
-             enthaelt den kompletten feingetunten Backbone.
-  Kopf       Kleiner Faltungsdecoder auf den Patch-Tokens, rund 2 M Parameter.
-  Ziel       Die gemessene Parallaxenkarte aus build_parallax.py.
+Setup:
+  backbone   DINOv3 ViT-B/16 from the DINOvTree checkpoint, frozen. Meta's
+             original weights are not needed; the checkpoint contains the
+             complete fine-tuned backbone.
+  head       A small convolutional decoder on the patch tokens, ~2 M parameters.
+  target     The measured parallax map from build_parallax.py.
 
-Die absolute Skala der Parallaxe ist unbekannt und variiert je Frame mit der
-Basislinie. Deshalb wird **skaleninvariant** trainiert: Vorhersage und Ziel
-werden je Ausschnitt standardisiert, bevor der L1-Abstand gebildet wird. Gelernt
-wird also die Form des Reliefs, nicht sein Betrag -- genau das, was Wipfelsuche
-und Sattelprominenz brauchen.
+The absolute scale of the parallax is unknown and varies per frame with the
+baseline. Training is therefore **scale-invariant**: prediction and target are
+standardised per crop before the L1 distance is formed. What is learned is thus
+the shape of the relief, not its magnitude -- exactly what treetop finding and
+saddle prominence need.
 
-Aufgeteilt wird nach **Ordnern**, nicht nach Frames: Frames desselben Fluges sind
-sich zu aehnlich, eine zufaellige Aufteilung wuerde die Guete schoenrechnen.
+The split is by **folder**, not by frame: frames of the same flight are too
+similar, and a random split would flatter the result.
 
-Beispiel:
+Example:
     python distill_height.py --mode train
     python distill_height.py --mode predict --out-cache .../predicted_cache
 """
@@ -50,7 +50,7 @@ PATCH = 16
 
 
 class HeightHead(nn.Module):
-    """Faltungsdecoder von Patch-Tokens auf eine dichte Hoehenkarte."""
+    """Convolutional decoder from patch tokens to a dense height map."""
 
     def __init__(self, in_dim: int = 768, width: int = 256) -> None:
         super().__init__()
@@ -70,7 +70,7 @@ class HeightHead(nn.Module):
 
 
 def standardize(x: torch.Tensor) -> torch.Tensor:
-    """Je Beispiel auf Mittelwert 0 und Streuung 1 -- macht den Verlust skaleninvariant."""
+    """Per example to mean 0 and std 1 -- this makes the loss scale-invariant."""
     flat = x.flatten(1)
     mean = flat.mean(dim=1, keepdim=True)
     std = flat.std(dim=1, keepdim=True).clamp_min(1e-6)
@@ -78,7 +78,7 @@ def standardize(x: torch.Tensor) -> torch.Tensor:
 
 
 class CropDataset(torch.utils.data.Dataset):
-    """Zufaellige Ausschnitte aus Frames mit gemessener Parallaxe."""
+    """Random crops from frames that have a measured parallax."""
 
     def __init__(self, samples: list[tuple[Path, Path]], crop: int, length: int, augment: bool) -> None:
         self.samples = samples
@@ -121,7 +121,7 @@ class CropDataset(torch.utils.data.Dataset):
 
 
 def collect_samples(args) -> dict[str, list[tuple[Path, Path]]]:
-    """Frames mit Parallaxenkarte, nach Ordner gruppiert."""
+    """Frames with a parallax map, grouped by folder."""
     grouped: dict[str, list[tuple[Path, Path]]] = {}
     for target_path in sorted(args.parallax_cache.glob("*.npy")):
         folder, _, stem = target_path.stem.partition("__")
@@ -208,7 +208,7 @@ def run_training(args, device) -> None:
 
 @torch.no_grad()
 def predict_frame(backbone, head, image_rgb: np.ndarray, device, long_side: int) -> np.ndarray:
-    """Ganzes Bild in einem Durchgang -- kein Kacheln, damit die Karte global konsistent bleibt."""
+    """The whole image in one pass -- no tiling, so the map stays globally consistent."""
     height, width = image_rgb.shape[:2]
     scale = long_side / max(height, width)
     new_w = int(round(width * scale / PATCH)) * PATCH
@@ -255,12 +255,12 @@ def run_prediction(args, device) -> None:
 
 @torch.no_grad()
 def run_evaluation(args, device) -> None:
-    """Wie gut trifft die Vorhersage die Messung -- und schlaegt sie die Alternativen?
+    """How well does the prediction match the measurement -- and does it beat the alternatives?
 
-    Verglichen wird gegen zwei Referenzen: eine konstante Vorhersage (was ein
-    Modell erreicht, das nichts gelernt hat) und Depth-Anything (das fertige
-    monokulare Modell, das wir ersetzen wollen). Nur wenn der destillierte Kopf
-    beide schlaegt, hat die Destillation etwas gebracht.
+    It is compared against two references: a constant prediction (what a model
+    that learned nothing achieves) and Depth Anything (the off-the-shelf monocular
+    model we want to replace). Only if the distilled head beats both has the
+    distillation achieved anything.
     """
     from scipy.stats import spearmanr
 
@@ -290,7 +290,7 @@ def run_evaluation(args, device) -> None:
                 build_pseudo_chm(np.load(depth_path), 100.0, 3.0) if depth_path.exists() else None
             )
 
-            # Stichprobe reicht und haelt Spearman bezahlbar.
+            # A sample is enough and keeps Spearman affordable.
             index = np.random.default_rng(0).choice(measured.size, size=20000, replace=False)
             flat_measured = measured.ravel()[index]
             rows.append({
@@ -340,7 +340,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--epochs", type=int, default=40)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--long-side", type=int, default=1024, help="Bildgroesse bei der Vorhersage.")
+    parser.add_argument("--long-side", type=int, default=1024, help="Image size at prediction time.")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
 

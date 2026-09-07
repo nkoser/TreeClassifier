@@ -1,26 +1,26 @@
-"""Stufe 2: Kroneninstanzen direkt aus einem Einzelbild lernen.
+"""Stage 2: learn crown instances directly from a single image.
 
-Trainiert auf BAMFORESTS (58 228 annotierte Kronen aus deutschem Wald) statt auf
-Heuristiken. Damit entfaellt zur Anwendung alles, was mehrere Frames oder eine
-geschaetzte Tiefe brauchte -- ein Bild rein, Kronen raus.
+Trained on BAMFORESTS (58,228 annotated crowns from German forest) instead of on
+heuristics. At inference that removes everything needing several frames or an
+estimated depth -- one image in, crowns out.
 
-Bauform wie bei dichter Zellsegmentierung, weil das Problem dasselbe ist: viele
-sich beruehrende, rundliche Objekte. Der Kopf sagt drei Karten vorher:
+The design follows dense cell segmentation, because the problem is the same:
+many touching, roundish objects. The head predicts three maps:
 
-  inneres   Krone ohne Randsaum. Getrennte Zusammenhangskomponenten hier sind
-            bereits die Instanzkeime -- die Trennung lernt also das Netz.
-  rand      Kronenrand. Wird vom Inneren abgezogen und haelt Nachbarn auseinander.
-  zentrum   Gauss um den Kronenschwerpunkt, stabilisiert das Training und liefert
-            bei Bedarf zusaetzliche Keime.
+  inneres   The crown without its margin. Separate connected components here are
+            already the instance seeds -- so the network learns the separation.
+  rand      The crown margin. Subtracted from the interior, it keeps neighbours apart.
+  zentrum   A Gaussian around the crown centroid; it stabilises training and
+            supplies additional seeds where needed.
 
-Zur Anwendung: Keime = Zusammenhangskomponenten des Inneren, danach Watershed bis
-zur Kronenmaske. Das Watershed fuellt hier nur noch auf, es entscheidet nichts --
-anders als in segment_trees.py, wo es die Trennung selbst treffen musste.
+At inference: seeds = connected components of the interior, then a watershed out
+to the canopy mask. Here the watershed only fills in, it decides nothing --
+unlike in segment_trees.py, where it had to make the separation itself.
 
-Der Backbone (DINOv3 aus dem DINOvTree-Checkpoint) bleibt eingefroren, trainiert
-werden nur die rund 2 M Parameter des Kopfes.
+The backbone (DINOv3 from the DINOvTree checkpoint) stays frozen; only the ~2 M
+parameters of the head are trained.
 
-Beispiel:
+Example:
     python crownnet.py --mode prepare
     python crownnet.py --mode train
     python crownnet.py --mode predict --frames-dir /cold/Mahfuz/chosen_frames
@@ -51,12 +51,12 @@ PATCH = 16
 
 
 # --------------------------------------------------------------------------- #
-# Aufbereitung
+# Preparation
 # --------------------------------------------------------------------------- #
 
 
 def rasterize_split(coco_path: Path, image_root: Path, out_dir: Path, scale: float) -> int:
-    """COCO-Polygone in Instanz-Labelkarten umwandeln, Bilder auf Zielmassstab bringen."""
+    """Turn COCO polygons into instance label maps, bring images to the target scale."""
     data = json.loads(coco_path.read_text())
     by_image: dict[int, list] = {}
     for annotation in data["annotations"]:
@@ -98,12 +98,12 @@ def rasterize_split(coco_path: Path, image_root: Path, out_dir: Path, scale: flo
 
 
 def targets_from_labels(labels: np.ndarray, boundary_px: int, sigma: float) -> np.ndarray:
-    """Drei Zielkarten aus einer Instanz-Labelkarte."""
+    """Three target maps from one instance label map."""
     kernel = np.ones((3, 3), np.uint8)
     work = labels.astype(np.uint16)
 
     crown = (labels > 0).astype(np.float32)
-    # Randsaum: dort stossen zwei Instanzen aneinander oder die Krone endet.
+    # Margin: this is where two instances meet or where the crown ends.
     border = ((cv2.dilate(work, kernel, iterations=boundary_px)
                != cv2.erode(work, kernel, iterations=boundary_px)) & (labels > 0)).astype(np.float32)
     interior = np.clip(crown - border, 0, 1)
@@ -122,18 +122,18 @@ def targets_from_labels(labels: np.ndarray, boundary_px: int, sigma: float) -> n
 
 
 # --------------------------------------------------------------------------- #
-# Modell
+# Model
 # --------------------------------------------------------------------------- #
 
 
 class CrownHead(nn.Module):
-    """Faltungsdecoder auf den Patch-Tokens plus hochaufgeloester Bildzweig.
+    """Convolutional decoder on the patch tokens plus a high-resolution image branch.
 
-    Die Tokens der letzten ViT-Schicht liegen auf einem 16-px-Raster und sind
-    semantisch stark, aber raeumlich grob -- daraus allein entsteht ein
-    weichgezeichnetes Blobfeld ohne geschlossene Kronenraender. Der zusaetzliche
-    flache Zweig auf dem Originalbild liefert die scharfen Kanten, die Tokens den
-    Kontext. Beides wird bei voller Aufloesung zusammengefuehrt.
+    The tokens of the last ViT layer sit on a 16 px grid and are semantically
+    strong but spatially coarse -- from them alone you get a blurred blob field
+    without closed crown boundaries. The additional shallow branch on the original
+    image supplies the sharp edges, the tokens supply the context. Both are merged
+    at full resolution.
     """
 
     def __init__(self, in_dim: int = 768, width: int = 256, out_channels: int = 3, stem: int = 32) -> None:
@@ -154,8 +154,8 @@ class CrownHead(nn.Module):
             nn.Conv2d(width, width // 2, 3, padding=1), nn.GroupNorm(8, width // 2), nn.GELU(),
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
             nn.Conv2d(width // 2, width // 4, 3, padding=1), nn.GroupNorm(8, width // 4), nn.GELU(),
-            # Dritte Stufe: 16 px Patch -> 2 px Ausgaberaster. Ohne sie liegt das
-            # Ausgaberaster bei 4 px und ein schmaler Randsaum ist nicht darstellbar.
+            # Third stage: 16 px patch -> a 2 px output grid. Without it the output
+            # grid is 4 px and a narrow margin cannot be represented.
             nn.Upsample(scale_factor=2, mode="bilinear", align_corners=False),
             nn.Conv2d(width // 4, width // 8, 3, padding=1), nn.GroupNorm(4, width // 8), nn.GELU(),
         )
@@ -209,7 +209,7 @@ def build_backbone(args, device):
 
 
 def dice_bce(logits: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
-    """Dice gegen das starke Klassenungleichgewicht, BCE fuer stabile Gradienten."""
+    """Dice against the strong class imbalance, BCE for stable gradients."""
     probability = torch.sigmoid(logits)
     intersection = (probability * target).sum(dim=(1, 2))
     dice = 1 - (2 * intersection + 1) / (probability.sum(dim=(1, 2)) + target.sum(dim=(1, 2)) + 1)
@@ -225,19 +225,19 @@ def compute_loss(prediction: torch.Tensor, targets: torch.Tensor) -> torch.Tenso
 
 
 # --------------------------------------------------------------------------- #
-# Instanzbildung
+# Instance formation
 # --------------------------------------------------------------------------- #
 
 
 def instances_from_maps(maps: np.ndarray, args) -> np.ndarray:
-    """Keime aus dem Inneren, danach Watershed bis zur Kronenmaske."""
+    """Seeds from the interior, then a watershed out to the canopy mask."""
     from skimage.measure import label as cc_label
     from skimage.segmentation import watershed
 
     interior, border, centers = maps
     seeds = cc_label(interior > args.interior_thresh)
 
-    # Zu kleine Keime verwerfen -- meist Reste am Kronenrand.
+    # Discard seeds that are too small -- usually leftovers at the crown margin.
     counts = np.bincount(seeds.ravel())
     for value in np.flatnonzero(counts < args.min_seed_px):
         if value:
@@ -374,14 +374,14 @@ def run_prediction(args, device) -> None:
 
 
 def match_instances(predicted: np.ndarray, truth: np.ndarray, threshold: float) -> tuple[int, int, int, list[float]]:
-    """Greedy-Zuordnung ueber IoU. Gibt (Treffer, Fehlalarme, Verfehlte, IoUs)."""
+    """Greedy assignment by IoU. Returns (hits, false alarms, misses, IoUs)."""
     pred_ids = [i for i in np.unique(predicted) if i > 0]
     true_ids = [i for i in np.unique(truth) if i > 0]
     if not pred_ids or not true_ids:
         return 0, len(pred_ids), len(true_ids), []
 
-    # Ueberschneidungsmatrix ueber ein gemeinsames Histogramm -- deutlich
-    # schneller als paarweise Maskenvergleiche.
+    # Intersection matrix via a joint histogram -- considerably faster than
+    # pairwise mask comparisons.
     pred_index = {value: i for i, value in enumerate(pred_ids)}
     true_index = {value: i for i, value in enumerate(true_ids)}
     overlap = np.zeros((len(pred_ids), len(true_ids)), dtype=np.int64)
@@ -409,10 +409,10 @@ def match_instances(predicted: np.ndarray, truth: np.ndarray, threshold: float) 
 
 
 def run_evaluation(args, device) -> None:
-    """Instanzgenauigkeit gegen die BAMFORESTS-Labels -- die erste harte Zahl.
+    """Instance accuracy against the BAMFORESTS labels -- the first hard number.
 
-    Ausgewertet wird nach Gebiet getrennt: `Hain` kommt in Training und
-    Validierung nicht vor und ist damit der einzige echte Uebertragungstest.
+    Evaluated separately per area: `Hain` occurs in neither training nor
+    validation and is therefore the only real transfer test.
     """
     import collections
 
@@ -425,8 +425,8 @@ def run_evaluation(args, device) -> None:
         print(f"Keine Kacheln in {args.eval_splits}")
         return
 
-    # Nach Gebiet schichten -- alphabetisch sortiert waeren sonst alle Kacheln
-    # aus demselben Gebiet, und der Uebertragungstest waere keiner.
+    # Stratify by area -- sorted alphabetically, all tiles would otherwise come
+    # from the same area, and the transfer test would be no test at all.
     by_area: dict[str, list] = {}
     for tile in tiles:
         by_area.setdefault(tile.stem.split("_")[0], []).append(tile)
@@ -482,8 +482,8 @@ def run_evaluation(args, device) -> None:
 
 
 def run_inspect(args, device) -> None:
-    """Ziel- und Vorhersagekarten nebeneinander -- zeigt, ob das Netz oder die
-    Instanzbildung das Problem ist."""
+    """Target and prediction maps side by side -- shows whether the network or the
+    instance formation is the problem."""
     backbone = build_backbone(args, device)
     head = CrownHead().to(device)
     state = torch.load(args.checkpoint, map_location=device, weights_only=False)
@@ -535,9 +535,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--categories", type=Path, default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
 
     parser.add_argument("--scale", type=float, default=0.34,
-                        help="BAMFORESTS auf den Massstab der eigenen Frames bringen.")
-    parser.add_argument("--boundary-px", type=int, default=3, help="Breite des Randsaums.")
-    parser.add_argument("--sigma", type=float, default=6.0, help="Streuung der Zentrums-Gausskurven.")
+                        help="Bring BAMFORESTS to the scale of our own frames.")
+    parser.add_argument("--boundary-px", type=int, default=3, help="Width of the margin.")
+    parser.add_argument("--sigma", type=float, default=6.0, help="Spread of the centre Gaussians.")
 
     parser.add_argument("--crop", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -552,14 +552,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-seed-px", type=int, default=60)
     parser.add_argument("--long-side", type=int, default=1920)
     parser.add_argument("--predict-scale", type=float, default=1.0,
-                        help="Eigene Frames hochskalieren, damit eine Krone genauso viele Patches "
-                             "belegt wie im Training. Massgeblich ist die Patchzahl, nicht die Pixelzahl.")
+                        help="Upscale our own frames so that a crown occupies as many patches as "
+                             "in training. What counts is the patch count, not the pixel count.")
     parser.add_argument("--eval-splits", nargs="*", default=["test1", "test2"])
-    parser.add_argument("--eval-tiles", type=int, default=200, help="Obergrenze, haelt die Auswertung kurz.")
+    parser.add_argument("--eval-tiles", type=int, default=200, help="Upper bound; keeps the evaluation short.")
     parser.add_argument("--iou-thresh", type=float, default=0.5)
     parser.add_argument("--inspect-tiles", type=int, default=3)
     parser.add_argument("--labels-from", type=Path, default=None,
-                        help="Statt selbst vorherzusagen: fertige Labelkarten bewerten (Vergleich mit SAM 3).")
+                        help="Instead of predicting: score existing label maps (comparison with SAM 3).")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
 

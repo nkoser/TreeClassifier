@@ -1,25 +1,24 @@
-"""Die ganze Kette gegen die Wahrheit: Tiefe, Bodenmodell, Hoehe ueber Boden.
+"""The whole chain against the truth: depth, terrain model, height above ground.
 
-Bei den eigenen Frames laesst sich nicht pruefen, ob das Gelaendemodell stimmt --
-es gibt keine Wahrheit. Auf den FORTRESS-Testgebieten schon: dort steht zu jedem
-Bildpunkt die Hoehe ueber Boden im nDSM.
+On our own frames it cannot be checked whether the terrain model is right --
+there is no truth. On the FORTRESS test sites it can: there the nDSM carries the
+height above ground for every pixel.
 
-Verglichen werden drei Wege zur Hoehe:
+Three routes to height are compared:
 
-  aus dem Gelaendemodell   `Z = Boden(geschaetzt) - d`. Der Weg, den die
-                           Punktwolken gehen. Braucht keine Flughoehe.
-  aus der Flughoehe        `Z = H - d`. Setzt voraus, dass H bekannt ist, und
-                           nimmt keine Gelaendeneigung mit.
-  Tiefe allein             `d` gegen die wahre Tiefe -- trennt Fehler des
-                           Tiefenmodells von Fehlern des Gelaendemodells.
-  direktes Hoehenmodell    Ein zweites Modell, das die Hoehe unmittelbar
-                           vorhersagt, statt sie aus der Tiefe zu rechnen
-                           (`--hoehenmodell`). Braucht weder Bildwinkel noch
-                           Bodenbezug.
+  from the terrain model  `Z = ground(estimated) - d`. The route the point
+                          clouds take. Needs no flight altitude.
+  from the altitude       `Z = H - d`. Presumes H is known, and does not carry
+                          terrain slope.
+  depth alone             `d` against the true depth -- separates errors of the
+                          depth model from errors of the terrain model.
+  direct height model     A second model predicting the height directly instead
+                          of computing it from the depth (`--hoehenmodell`).
+                          Needs neither field of view nor ground reference.
 
-Zusaetzlich wird der Bodenfaktor durchprobiert. Er gleicht aus, dass die tiefste
-**sichtbare** Stelle im geschlossenen Bestand ueber dem echten Boden liegt; wie
-gross er sein muss, ist hier direkt messbar statt geschaetzt.
+In addition the ground factor is swept. It compensates for the fact that the
+deepest **visible** point in a closed stand lies above the real ground; how large
+it has to be is directly measurable here rather than estimated.
 
     python depthft/hoehe_pruefen.py --n 40
 """
@@ -48,10 +47,10 @@ def fehler(vorher: np.ndarray, wahr: np.ndarray, maske: np.ndarray) -> dict[str,
     return {"mae_m": float(np.mean(np.abs(a - b))), "bias_m": float(np.mean(a - b)),
             "rmse_m": float(np.sqrt(np.mean((a - b) ** 2))),
             "korrelation": float(np.corrcoef(a, b)[0, 1]) if a.std() > 0 and b.std() > 0 else np.nan,
-            # Je Ausschnitt festgehalten, um spaeter zu trennen, ob das Modell
-            # *innerhalb* eines Bildes differenziert oder auch *zwischen*
-            # Bestaenden. Ein Modell, das immer den Trainingsmittelwert raet,
-            # kann innerhalb gut aussehen und zwischen Bestaenden blind sein.
+            # Recorded per crop, so as to distinguish later whether the model
+            # differentiates *within* an image or also *between* stands. A model
+            # that always guesses the training mean can look good within an image
+            # and be blind between stands.
             "p95_vorher": float(np.percentile(a, 95)), "p95_wahr": float(np.percentile(b, 95))}
 
 
@@ -62,13 +61,13 @@ def main() -> None:
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft"))
     parser.add_argument("--split", default="test")
-    parser.add_argument("--n", type=int, default=40, help="Ausschnitte je Gebiet.")
+    parser.add_argument("--n", type=int, default=40, help="Crops per site.")
     parser.add_argument("--kachel-m", type=float, nargs="*", default=[10.0, 15.0, 25.0])
     parser.add_argument("--boden-faktoren", type=float, nargs="*",
                         default=[1.0, 0.96, 0.917, 0.88])
     parser.add_argument("--perzentil", type=float, default=97.0)
     parser.add_argument("--hoehenmodell", type=Path, default=None,
-                        help="Checkpoint aus finetune_hoehe.py; sagt Meter unmittelbar vorher.")
+                        help="Checkpoint from finetune_hoehe.py; predicts metres directly.")
     parser.add_argument("--seed", type=int, default=4242)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     args = parser.parse_args()
@@ -99,7 +98,7 @@ def main() -> None:
 
         grund = {"ausschnitt": i, "gebiet": probe["site"], "flughoehe_m": H}
         if hoehenmodell is not None:
-            # Die Ausgabe ist unmittelbar in Metern; kein k, kein Bodenbezug.
+            # The output is directly in metres; no k, no ground reference.
             h_direkt, _ = inferenz.roh(hoehenmodell, bild, device=device)
             zeilen.append({**grund, "weg": "direktes Hoehenmodell", "kachel_m": np.nan,
                            "boden_faktor": np.nan, **fehler(h_direkt, h_gt, maske)})
@@ -111,9 +110,9 @@ def main() -> None:
             for faktor in args.boden_faktoren:
                 boden = bodenmodell(d, gsd, kachel, args.perzentil, faktor)
                 z = boden - d
-                # Form aus dem Gelaendemodell, absolute Lage aus der Flughoehe:
-                # das Gelaendemodell trifft die Neigung, kennt aber keinen
-                # Massstab; die Flughoehe liefert genau den und sonst nichts.
+                # Shape from the terrain model, absolute position from the flight
+                # altitude: the terrain model gets the slope right but knows no
+                # scale; the altitude supplies exactly that and nothing else.
                 boden_k = boden - np.median(boden) + H
                 zk = boden_k - d
                 werte_k = fehler(zk, h_gt, maske)

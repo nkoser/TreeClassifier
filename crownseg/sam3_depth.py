@@ -1,33 +1,31 @@
-"""SAM 3 mit Depth Pro: der Textprompt findet Kronen, die Tiefe trennt und ergaenzt.
+"""SAM 3 with Depth Pro: the text prompt finds crowns, the depth splits and completes.
 
-Auf BAMFORESTS test1 (Hain) haben alle SAM-Varianten dasselbe Profil gezeigt:
-die Raender sitzen ausgezeichnet -- mittlere IoU der Treffer 0.75 bis 0.77, besser
-als alles Trainierte --, aber es wird zu wenig gefunden. SAM 3 mit Textprompt
-kommt auf eine Trefferquote von 0.30, die Tiefen-Prompt-Variante auf 0.16. Der
-Engpass sind fehlende Instanzen, nicht schlechte Abgrenzung.
+On BAMFORESTS test1 (Hain) every SAM variant showed the same profile: the
+boundaries sit excellently -- mean IoU of the hits 0.75 to 0.77, better than
+anything trained -- but too little is found. SAM 3 with a text prompt reaches a
+recall of 0.30, the depth-prompt variant 0.16. The bottleneck is missing
+instances, not poor delineation.
 
-Die Tiefe bekommt hier deshalb drei klar getrennte Aufgaben:
+The depth therefore gets clearly separated jobs here:
 
-  trennen      Eine SAM-Maske ueber mehreren Wipfeln wird an den Wipfeln
-               aufgeteilt (Watershed im Inneren der Maske). Genau diesen Fall
-               behandelt `segment_hybrid.py` nicht -- dort ist eine SAM-Maske
-               immer genau eine Krone.
-  ergaenzen    Wipfel ohne SAM-Maske bekommen ein Watershed-Becken auf der
-               Restflaeche. Das ist der Teil, den `segment_hybrid.py` bereits
-               kann und der hier unveraendert wiederverwendet wird.
-  saeen       Ein Wipfel, der in keiner SAM-3-Maske liegt, wird zum Punkt-Prompt.
-               Die Tiefe liefert nur das Wo, die Grenze zieht wieder ein
-               Bildmodell -- der Unterschied zum Ergaenzungsschritt, bei dem die
-               Form aus dem Watershed kam und nichts traf.
-  bestaetigen  Eine Maske ohne jeden Wipfel ueberlebt nur, wenn ihre Form passt.
+  split        A SAM mask spanning several treetops is divided at the treetops
+               (watershed inside the mask). `segment_hybrid.py` does not handle
+               that case at all -- there a SAM mask is always exactly one crown.
+  complete     Treetops without a SAM mask get a watershed basin on the
+               remaining area. That is the part `segment_hybrid.py` already does,
+               reused here unchanged.
+  seed         A treetop lying in no SAM 3 mask becomes a point prompt. The depth
+               supplies only the where; an image model draws the boundary again --
+               the difference from the completion step, where the shape came from
+               the watershed and hit nothing.
+  confirm      A mask without any treetop survives only if its shape fits.
 
-Warum Depth Pro und nicht weiter Depth-Anything-V2: fuer das Trennen zaehlt
-nicht die metrische Richtigkeit der Tiefe, sondern wie scharf die Kante zwischen
-zwei benachbarten Wipfeln ist. Depth-Anything-V2-Metric-Outdoor liefert eine
-glatte Oberflaeche, auf der zwei sich beruehrende Kronen zu einem Huegel
-verschmelzen. Das ist aber eine Vermutung, keine Messung -- deshalb ist das
-Modell ein Schalter (`--depth-model`) und beide Varianten werden gegen dieselbe
-Wahrheit gerechnet.
+Why Depth Pro and not Depth-Anything-V2 any longer: for splitting, what counts
+is not the metric correctness of the depth but how sharp the edge between two
+neighbouring treetops is. Depth-Anything-V2-Metric-Outdoor delivers a smooth
+surface on which two touching crowns merge into one hill. That is a conjecture,
+though, not a measurement -- so the model is a switch (`--depth-model`) and both
+variants are scored against the same ground truth.
 
     python crownseg/sam3_depth.py --input <ordner> --depth-model depthpro
 """
@@ -63,7 +61,7 @@ DEPTH_MODELS = {
 
 
 def treetops(chm: np.ndarray, args) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Wipfel als lokale Maxima im Ersatz-CHM, ueber dem Kronendach gerechnet."""
+    """Treetops as local maxima in the surrogate CHM, computed over the canopy."""
     smoothed = cv2.GaussianBlur(chm, (0, 0), max(0.8, args.crown_px * args.smooth_factor))
     canopy = smoothed > np.percentile(smoothed, args.gap_percentile)
     if canopy.sum() < 10:
@@ -76,7 +74,7 @@ def treetops(chm: np.ndarray, args) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 
 
 def split_by_tops(mask: np.ndarray, markers: np.ndarray, smoothed: np.ndarray) -> list[np.ndarray]:
-    """Maske an ihren Wipfeln aufteilen; bei hoechstens einem Wipfel unveraendert."""
+    """Split a mask at its treetops; unchanged if it has at most one."""
     local = np.where(mask, markers, 0)
     present = [value for value in np.unique(local) if value > 0]
     if len(present) <= 1:
@@ -103,8 +101,8 @@ def crowns_from_frame(model, processor, estimator, image_rgb, key, args, device,
     depth = estimator(image_rgb, key)
     chm = build_pseudo_chm(depth, args.crown_px, args.detrend_factor)
     markers, smoothed, canopy = treetops(chm, args)
-    # Die Becken dienen nur als Groessenreferenz bei der Kandidatenwahl -- die
-    # Grenze zieht SAM. Genau die Rolle, in der das Watershed etwas taugt.
+    # The basins serve only as a size reference for the candidate choice -- SAM
+    # draws the boundary. Exactly the role in which the watershed is any good.
     basins = watershed(-smoothed, markers, mask=canopy) if seeder is not None else None
 
     masks, scores = segment_tile(model, processor, image_rgb, args.prompt, args.threshold, device)
@@ -118,8 +116,8 @@ def crowns_from_frame(model, processor, estimator, image_rgb, key, args, device,
         mask = np.asarray(masks[index], dtype=bool)
         if mask.sum() == 0:
             continue
-        # Bereits vergebene Flaeche abziehen statt die Maske ganz zu verwerfen --
-        # SAM 3 liefert regelmaessig ineinanderliegende Kandidaten.
+        # Subtract already claimed area instead of discarding the mask entirely --
+        # SAM 3 regularly returns nested candidates.
         if np.logical_and(mask, occupied).sum() / mask.sum() > args.max_overlap:
             continue
         mask = mask & ~occupied
@@ -135,13 +133,12 @@ def crowns_from_frame(model, processor, estimator, image_rgb, key, args, device,
             sources.append("sam3")
         occupied |= mask
 
-    # Saeen: freie Wipfel als Punkt-Prompt an SAM.
+    # Seeding: free treetops as point prompts to SAM.
     #
-    # Gemessen auf test1: von den Wipfeln, die in keiner SAM-3-Maske liegen,
-    # liegen bei Prominenz 0.02 zwei Drittel (66.7 %) in einer Krone, die SAM 3
-    # verpasst hat. Die Positionen taugen also, nur die Watershed-Formen an
-    # denselben Stellen trafen nichts. Obergrenze dieses Schritts: Trefferquote
-    # 0.554 statt 0.296, F1 0.606 statt 0.342.
+    # Measured on test1: of the treetops lying in no SAM 3 mask, two thirds
+    # (66.7 %) at prominence 0.02 lie in a crown SAM 3 missed. So the positions
+    # are good, only the watershed shapes at the same places hit nothing. Ceiling
+    # of this step: recall 0.554 instead of 0.296, F1 0.606 instead of 0.342.
     saat = dict(frei=0, kandidaten=0, ueberlappt=0, form=0, genommen=0)
     if seeder is not None:
         occupied_now = occupied.copy()
@@ -164,9 +161,9 @@ def crowns_from_frame(model, processor, estimator, image_rgb, key, args, device,
                 mask = np.asarray(mask, dtype=bool)
                 if mask.sum() == 0:
                     continue
-                # Kronen beruehren sich; eine frisch gesaete Krone ueberlappt
-                # ihre Nachbarn fast immer. Gemessen wird deshalb gegen einen
-                # eigenen, grosszuegigeren Schwellwert als bei SAM 3 selbst.
+                # Crowns touch; a freshly seeded crown almost always overlaps its
+                # neighbours. So it is measured against its own, more generous
+                # threshold than SAM 3 itself uses.
                 if np.logical_and(mask, occupied).sum() / mask.sum() > args.seed_max_overlap:
                     saat["ueberlappt"] += 1
                     continue
@@ -180,13 +177,13 @@ def crowns_from_frame(model, processor, estimator, image_rgb, key, args, device,
                 saat["genommen"] += 1
                 occupied |= mask
 
-    # Restflaeche: Wipfel, zu denen SAM 3 nichts geliefert hat.
+    # Remaining area: treetops for which SAM 3 delivered nothing.
     #
-    # Gemessen auf test1 (Hain): von 291 so ergaenzten Kronen trifft keine
-    # einzige eine echte Krone bei IoU 0.5, bei IoU 0.1 sind es 2.7 %. Sie
-    # liegen in Luecken und Schatten, nicht auf Baeumen -- die Restflaeche ist
-    # per Konstruktion das, was SAM 3 fuer keinen Baum gehalten hat, und darin
-    # findet das Watershed zuverlaessig nichts. Deshalb standardmaessig aus.
+    # Measured on test1 (Hain): of 291 crowns added this way, not a single one
+    # hits a real crown at IoU 0.5; at IoU 0.1 it is 2.7 %. They sit in gaps and
+    # shadows, not on trees -- by construction the remaining area is what SAM 3
+    # considered not to be a tree, and in there the watershed reliably finds
+    # nothing. Off by default for that reason.
     if not args.residual:
         frame = pd.DataFrame(records)
         if not frame.empty:
@@ -248,16 +245,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--smooth-factor", type=float, default=0.06)
     parser.add_argument("--gap-percentile", type=float, default=15.0)
     parser.add_argument("--peak-prominence", type=float, default=0.02,
-                        help="0.10 war auf 100-px-Kronen eingestellt; bei 275 px viel zu streng.")
+                        help="0.10 was tuned for 100 px crowns; far too strict at 275 px.")
     parser.add_argument("--seed-free-peaks", action=argparse.BooleanOptionalAction, default=True,
-                        help="Freie Wipfel als Punkt-Prompt an SAM geben.")
-    parser.add_argument("--sam-model", default=SAM_MODEL, help="Punkt-promptbares Modell fuer die Saat.")
+                        help="Pass free treetops to SAM as point prompts.")
+    parser.add_argument("--sam-model", default=SAM_MODEL, help="Point-promptable model for the seeding.")
     parser.add_argument("--select", choices=("basin", "score", "area"), default="basin")
     parser.add_argument("--chunk", type=int, default=24)
     parser.add_argument("--seed-max-overlap", type=float, default=0.60,
-                        help="Wieviel eine gesaete Krone mit bereits gesetzten teilen darf.")
+                        help="How much a seeded crown may share with already placed ones.")
     parser.add_argument("--residual", action=argparse.BooleanOptionalAction, default=False,
-                        help="Aus der Restflaeche zusaetzliche Kronen ergaenzen (gemessen wertlos).")
+                        help="Add extra crowns from the remaining area (measured to be worthless).")
     parser.add_argument("--dilate-sam", type=int, default=3)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
@@ -281,8 +278,8 @@ def main() -> None:
         seeder = (SamModel.from_pretrained(args.sam_model).to(device).eval(),
                   AutoProcessor.from_pretrained(args.sam_model))
         print(f"Saat freier Wipfel ueber {args.sam_model}", flush=True)
-    # Eigener Cache je Tiefenmodell -- sonst liest der Depth-Pro-Lauf die
-    # Karten des Depth-Anything-Laufs und misst unbemerkt dasselbe zweimal.
+    # A separate cache per depth model -- otherwise the Depth Pro run would read
+    # the maps of the Depth Anything run and unknowingly measure the same twice.
     estimator = DepthEstimator(model_id, device, args.depth_cache / args.depth_model)
 
     folders = sorted(p for p in args.input.iterdir() if p.is_dir()) or [args.input]

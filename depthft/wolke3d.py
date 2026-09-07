@@ -1,17 +1,17 @@
-"""Die Punktwolke ueber dem Originalframe rendern -- als Standbilder und Umlauf.
+"""Render the point cloud above the original frame -- as stills and as an orbit.
 
-Das Frame liegt als Bodenflaeche in der Szene, die Punktwolke schwebt darueber.
-So ist auf einen Blick zu sehen, welcher Baum im Bild welcher Erhebung in der
-Wolke entspricht -- und ob die Hoehen ueberhaupt plausibel sind.
+The frame lies in the scene as a ground plane, with the point cloud floating
+above it. That shows at a glance which tree in the image corresponds to which
+rise in the cloud -- and whether the heights are plausible at all.
 
-Gerendert wird von Hand, weil im Container keine 3D-Bibliothek liegt. Das ist
-weniger Aufwand als es klingt:
+The rendering is done by hand, because there is no 3D library in the container.
+That is less work than it sounds:
 
-  Boden      Vier Eckpunkte der Bodenflaeche projizieren, daraus eine
-             Homographie, und das Frame mit `warpPerspective` hineinlegen.
-  Punkte     Perspektivisch projizieren, nach Tiefe sortieren, von hinten nach
-             vorne setzen. Die vorderen ueberschreiben die hinteren, was einen
-             Tiefenpuffer ersetzt.
+  ground     Project the four corners of the ground plane, derive a homography
+             from them, and place the frame in with `warpPerspective`.
+  points     Project perspectively, sort by depth, and draw from back to front.
+             The front ones overwrite the ones behind, which replaces a depth
+             buffer.
 
     python depthft/wolke3d.py --frames 80m/frame_000297.jpg
     python depthft/wolke3d.py --frames 80m/frame_000297.jpg --umlauf
@@ -36,7 +36,7 @@ BILDENDUNGEN = {".jpg", ".jpeg", ".png"}
 
 
 def kamera(mitte: np.ndarray, abstand: float, azimut_grad: float, hoehe_grad: float):
-    """Blickpunkt und Achsenkreuz einer Kamera, die auf `mitte` schaut."""
+    """Viewpoint and axis frame of a camera looking at `mitte`."""
     az, el = np.radians(azimut_grad), np.radians(hoehe_grad)
     richtung = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
     auge = mitte + abstand * richtung
@@ -50,7 +50,7 @@ def kamera(mitte: np.ndarray, abstand: float, azimut_grad: float, hoehe_grad: fl
 
 def projizieren(punkte: np.ndarray, auge: np.ndarray, achsen: np.ndarray,
                 breite: int, hoehe: int, fov_grad: float) -> tuple[np.ndarray, np.ndarray]:
-    """Weltpunkte auf die Bildebene. Gibt Bildkoordinaten und Kameratiefe zurueck."""
+    """World points onto the image plane. Returns image coordinates and camera depth."""
     lokal = (punkte - auge) @ achsen.T
     tiefe = lokal[:, 2]
     f = (breite / 2.0) / np.tan(np.radians(fov_grad) / 2.0)
@@ -62,11 +62,11 @@ def projizieren(punkte: np.ndarray, auge: np.ndarray, achsen: np.ndarray,
 
 def boden_legen(leinwand: np.ndarray, frame_bgr: np.ndarray, ecken_welt: np.ndarray,
                 auge, achsen, fov_grad: float, abdunkeln: float) -> None:
-    """Das Frame als Bodenflaeche in die Szene legen."""
+    """Place the frame into the scene as a ground plane."""
     hoehe, breite = leinwand.shape[:2]
     ziel, tiefe = projizieren(ecken_welt, auge, achsen, breite, hoehe, fov_grad)
     if (tiefe <= 0.1).any():
-        return                      # eine Ecke liegt hinter der Kamera
+        return                      # a corner lies behind the camera
     fh, fw = frame_bgr.shape[:2]
     quelle = np.float32([[0, 0], [fw - 1, 0], [fw - 1, fh - 1], [0, fh - 1]])
     matrix = cv2.getPerspectiveTransform(quelle, ziel.astype(np.float32))
@@ -78,13 +78,13 @@ def boden_legen(leinwand: np.ndarray, frame_bgr: np.ndarray, ecken_welt: np.ndar
 
 def punkte_setzen(leinwand: np.ndarray, bild: np.ndarray, tiefe: np.ndarray,
                   farben: np.ndarray, groesse: int) -> int:
-    """Von hinten nach vorne setzen -- die vorderen ueberschreiben die hinteren."""
+    """Draw from back to front -- the front ones overwrite those behind."""
     hoehe, breite = leinwand.shape[:2]
     sichtbar = (tiefe > 0.1) & np.isfinite(bild).all(axis=1)
     if not sichtbar.any():
         return 0
     bild, tiefe, farben = bild[sichtbar], tiefe[sichtbar], farben[sichtbar]
-    reihe = np.argsort(-tiefe)                      # weiteste zuerst
+    reihe = np.argsort(-tiefe)                      # farthest first
     u = np.round(bild[reihe, 0]).astype(np.int32)
     v = np.round(bild[reihe, 1]).astype(np.int32)
     f = farben[reihe]
@@ -111,11 +111,11 @@ def beschriftung(leinwand: np.ndarray, zeilen: list[str]) -> None:
 def szene_rendern(frame_bgr, xyz, farben, azimut, hoehe_grad, breite, hoehe, fov_grad,
                   abstand_faktor, punkt_groesse, abdunkeln, zeilen,
                   boden_ebene: float | None = None) -> np.ndarray:
-    """`boden_ebene=None` legt das Frame unter die tiefsten sichtbaren Punkte.
+    """`boden_ebene=None` places the frame below the deepest visible points.
 
-    Auf 0 -- den geschaetzten Boden -- klafft sonst eine Luecke von rund 9 % der
-    Flughoehe, weil der Boden im Bestand gar nicht zu sehen ist. Physikalisch
-    richtig, als Bild aber irrefuehrend: die Textur zeigt ja Kronen von oben.
+    At 0 -- the estimated ground -- a gap of about 9 % of the flight altitude would
+    otherwise open up, because the ground is not visible in the stand at all.
+    Physically right, but misleading as an image: the texture shows crowns from above.
     """
     leinwand = np.full((hoehe, breite, 3), 18, np.uint8)
     mitte = np.array([xyz[:, 0].mean(), xyz[:, 1].mean(),
@@ -144,8 +144,8 @@ def main() -> None:
     parser.add_argument("--ft", type=Path,
                         default=Path("/scratch/shared/nik/runs/depthft/bestes"))
     parser.add_argument("--modellart", default="tiefe", choices=("tiefe", "hoehe"),
-                        help="tiefe: ueber die Tiefe, mit Gelaendemodell. hoehe: gibt Meter "
-                             "unmittelbar aus, unterscheidet aber nicht zwischen Bestaenden.")
+                        help="tiefe: via the depth, with a terrain model. hoehe: outputs metres "
+                             "directly, but does not distinguish between stands.")
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_3d"))
     parser.add_argument("--frames", nargs="*", default=None, metavar="ORDNER/DATEI")
@@ -154,24 +154,24 @@ def main() -> None:
     parser.add_argument("--breite", type=int, default=1600)
     parser.add_argument("--hoehe", type=int, default=1000)
     parser.add_argument("--blickwinkel", type=float, nargs="*", default=[35.0, 20.0, 60.0],
-                        help="Hoehenwinkel der Standbilder in Grad ueber dem Horizont.")
+                        help="Elevation angle of the stills in degrees above the horizon.")
     parser.add_argument("--azimut", type=float, default=225.0)
-    parser.add_argument("--kamera-fov", type=float, default=45.0, help="Bildwinkel der Ansichtskamera.")
-    parser.add_argument("--abstand", type=float, default=1.5, help="Vielfaches der Szenenbreite.")
-    parser.add_argument("--punkt", type=int, default=2, help="Kantenlaenge eines Punktes in Pixeln.")
+    parser.add_argument("--kamera-fov", type=float, default=45.0, help="Field of view of the viewing camera.")
+    parser.add_argument("--abstand", type=float, default=1.5, help="Multiple of the scene width.")
+    parser.add_argument("--punkt", type=int, default=2, help="Edge length of a point in pixels.")
     parser.add_argument("--boden-ebene", type=float, default=None,
-                        help="Hoehe der Bodenflaeche in Metern. Vorgabe: unter die "
-                             "tiefsten sichtbaren Punkte. 0 setzt sie auf den "
-                             "geschaetzten Boden, der im Bestand nicht sichtbar ist.")
+                        help="Height of the ground plane in metres. Default: below the "
+                             "deepest visible points. 0 places it at the estimated "
+                             "ground, which is not visible inside the stand.")
     parser.add_argument("--boden-dunkel", type=float, default=0.45,
-                        help="Wie stark das Bodenbild abgedunkelt wird, damit Punkte hervortreten.")
+                        help="How much the ground image is darkened so that points stand out.")
     parser.add_argument("--faerben", default="hoehe", choices=("hoehe", "bild"),
-                        help="hoehe: nach Hoehe eingefaerbt. bild: Originalfarben.")
+                        help="hoehe: coloured by height. bild: original colours.")
     parser.add_argument("--max-neigung", type=float, default=8.0,
-                        help="Punkte an Tiefenspruengen verwerfen; 0 schaltet es ab.")
+                        help="Discard points at depth jumps; 0 turns it off.")
     parser.add_argument("--min-hoehe", type=float, default=1.0,
-                        help="Punkte darunter weglassen -- sonst verdeckt der Bodenteppich alles.")
-    parser.add_argument("--umlauf", action="store_true", help="Zusaetzlich ein Video rundherum.")
+                        help="Omit points below this -- otherwise the ground carpet hides everything.")
+    parser.add_argument("--umlauf", action="store_true", help="Also render an orbiting video.")
     parser.add_argument("--umlauf-bilder", type=int, default=72)
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE",
                         default=["dense=51", "dense1=69", "mixed=92", "mixed1=103",
@@ -221,7 +221,7 @@ def main() -> None:
         h, w = tiefe.shape
         f_px = k * w
         gsd = H / f_px
-        # Beim Hoehenmodell steckt der Bodenbezug schon in der Vorhersage.
+        # With the height model the ground reference is already in the prediction.
         boden = (tiefe + hoehe_direkt if hoehe_direkt is not None
                  else bodenmodell(tiefe, gsd, args.kachel_m, 97.0, args.boden_faktor))
 

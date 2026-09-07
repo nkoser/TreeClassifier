@@ -1,8 +1,8 @@
-"""Gleitendes Fenster und Ausgabeformate -- gemeinsam fuer alle Verfahren.
+"""Sliding window and output formats -- shared by every method.
 
-Herausgezogen, damit Mask R-CNN, EoMT und Mask2Former nachweislich dieselbe
-Fensterlogik benutzen. Ein Vergleich, bei dem die Verfahren unterschiedlich
-kacheln, misst die Kachelung mit.
+Pulled out so that Mask R-CNN, EoMT and Mask2Former demonstrably use the same
+window logic. A comparison in which the methods tile differently measures the
+tiling as well.
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ import metrics as met
 
 
 def suppress(instances: list[met.Instance], threshold: float) -> list[met.Instance]:
-    """Maskenbasierte Unterdrueckung -- raeumt Dopplungen aus dem Fensterrand."""
+    """Mask-based suppression -- clears duplicates coming from the window margin."""
     kept: list[met.Instance] = []
     for candidate in sorted(instances, key=lambda i: -i.score):
         if all(met.iou(candidate, other) < threshold for other in kept):
@@ -27,19 +27,18 @@ def suppress(instances: list[met.Instance], threshold: float) -> list[met.Instan
 def slide(image_rgb: np.ndarray, tile: int, overlap: int,
           predict_window: Callable[[np.ndarray], list[met.Instance]],
           nms: float = 0.5) -> list[met.Instance]:
-    """Gleitendes Fenster, Zuordnung ueber den Kronenmittelpunkt.
+    """Sliding window, assignment via the crown centroid.
 
-    Jedes Fenster ist nur fuer seinen Kern zustaendig -- das Fenster ohne den
-    halben Ueberlapp an den Seiten, an denen ein Nachbarfenster anschliesst. Die
-    Kerne kacheln das Bild lueckenlos, jede Krone wird also genau einmal
-    vergeben, naemlich dort, wo ihr Mittelpunkt liegt.
+    Every window is responsible only for its core -- the window minus half the
+    overlap on the sides where a neighbouring window adjoins. The cores tile the
+    image without gaps, so every crown is assigned exactly once, namely where its
+    centroid lies.
 
-    Der Ueberlapp muss groesser sein als die groesste erwartete Krone
-    (BAMFORESTS: p95 bei 842 px in Hain). Sonst ragen Kronen, deren Mittelpunkt
-    im Kern liegt, ueber den Fensterrand hinaus und werden dort abgeschnitten.
-    Eine Regel "verwirf alles, was den Rand beruehrt" waere falsch: eine Krone
-    breiter als der Ueberlapp beruehrt in *jedem* Fenster einen Rand und
-    verschwindet komplett.
+    The overlap has to be larger than the largest expected crown (BAMFORESTS: p95
+    at 842 px in Hain). Otherwise crowns whose centroid lies in the core extend
+    beyond the window edge and get cut off there. A rule "discard everything that
+    touches the edge" would be wrong: a crown wider than the overlap touches an
+    edge in *every* window and disappears completely.
     """
     height, width = image_rgb.shape[:2]
     step = max(1, tile - overlap)
@@ -72,14 +71,14 @@ def slide(image_rgb: np.ndarray, tile: int, overlap: int,
 
 
 def to_label_map(instances: list[met.Instance], height: int, width: int) -> np.ndarray:
-    """Fuer Weiterverarbeitung und Betrachter; Ueberlappungen gewinnt der Sicherere."""
+    """For further processing and viewing; on overlap the more confident one wins."""
     labels = np.zeros((height, width), dtype=np.uint16)
     for index, instance in enumerate(sorted(instances, key=lambda i: i.score), start=1):
         x0, y0, x1, y1 = instance.box
-        # Instanzen aus hochskalierten Vorhersagen ragen nach dem Zurueckrechnen
-        # gelegentlich um ein bis zwei Pixel ueber den Bildrand. Fenster und
-        # Maske muessen deshalb gemeinsam beschnitten werden -- sonst passen die
-        # Formen nicht mehr zueinander, und zwar abhaengig von der Rundung.
+        # Instances from upscaled predictions occasionally stick out one or two
+        # pixels beyond the image border after being converted back. Window and
+        # mask therefore have to be clipped together -- otherwise the shapes no
+        # longer match, in a way that depends on the rounding.
         cx0, cy0 = max(0, x0), max(0, y0)
         cx1, cy1 = min(width, x1), min(height, y1)
         if cx0 >= cx1 or cy0 >= cy1:

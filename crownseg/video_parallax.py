@@ -1,25 +1,25 @@
-"""Gemessene Hoehenkarten aus einem Drohnenvideo statt geschaetzter Tiefe.
+"""Measured height maps from a drone video instead of estimated depth.
 
-Zwei Dinge sind an der monokularen Tiefe gescheitert, beide gemessen: sie kann
-verschmolzene Kronen nur begrenzt trennen (+0.030 F1), und sie unterscheidet
-Rasen nicht von Kronendach -- der Filterversuch dagegen brachte nichts. Beides
-sind Aufgaben fuer eine *gemessene* Hoehe, und ein Video liefert sie.
+Two things failed with monocular depth, both measured: it can only partly
+separate merged crowns (+0.030 F1), and it does not tell lawn from canopy -- the
+filter attempt against that brought nothing. Both are jobs for a *measured*
+height, and a video supplies one.
 
-Die Drohne bewegt sich zwischen zwei Frames. Hohe Objekte verschieben sich dabei
-staerker als der Boden, und dieser Restfluss nach Abzug der Bodenebene ist echte
-Parallaxe -- ein gemessenes Ersatz-CHM, keine Schaetzung. Das Verfahren dafuer
-steht bereits in `stereo_probe.parallax_map`; hier kommt nur die Auswahl der
-Bildpaare dazu.
+The drone moves between two frames. Tall objects shift more than the ground in
+doing so, and this residual flow after subtracting the ground plane is real
+parallax -- a measured surrogate CHM, not an estimate. The method for it is
+already in `stereo_probe.parallax_map`; only the choice of image pairs is added
+here.
 
-Unterschied zu `build_parallax.py`: das probiert alle Paare eines Ordners durch
-und haelt alle Bilder im Speicher. Bei vier Frames je Ordner geht das, bei einem
-Video mit 2224 Frames nicht -- quadratisch viele Paare. Hier bekommt jeder Frame
-stattdessen feste Partner in definiertem zeitlichem Abstand.
+Difference from `build_parallax.py`: that one tries every pair of a folder and
+keeps all images in memory. With four frames per folder that works; with a video
+of 2224 frames it does not -- quadratically many pairs. Here every frame instead
+gets fixed partners at a defined temporal distance.
 
-Die Wahl der Abstaende ist der eigentliche Parameter: zu nah und es gibt keine
-Basislinie (die Drohne stand oder bewegte sich kaum), zu weit und die Bilder
-ueberlappen nicht mehr genug fuer eine gemeinsame Homographie. Deshalb mehrere
-Abstaende gleichzeitig, jeder auf seine Basislinie normiert und gemittelt.
+The choice of distances is the real parameter: too close and there is no baseline
+(the drone was stationary or barely moved), too far and the images no longer
+overlap enough for a common homography. Hence several distances at once, each
+normalised to its baseline and averaged.
 
     python crownseg/video_parallax.py --video /cold/Mahfuz/DJI_...MP4 --count 60
 """
@@ -41,7 +41,7 @@ from stereo_probe import parallax_map  # noqa: E402
 
 
 class Settings:
-    """Was `parallax_map` an Parametern erwartet."""
+    """The parameters `parallax_map` expects."""
 
     def __init__(self, args) -> None:
         self.max_features = args.max_features
@@ -55,21 +55,21 @@ class Settings:
 
 
 def destripe(surface: np.ndarray, window: int) -> np.ndarray:
-    """Zeilenweisen Versatz entfernen -- standardmaessig aus, weil wirkungslos.
+    """Remove a per-row offset -- off by default, because it has no effect.
 
-    Der optische Fluss erzeugt schmale waagerechte Baender, die in den Rohframes
-    nicht vorhanden sind. Diese Funktion zieht den Ausreisser des Zeilenmedians
-    gegen seinen gleitenden Median ab. Im A/B-Test auf derselben Karte aendert
-    das nichts (36 auffaellige Zeilen mit und ohne, Amplitude 0.00366 gegen
-    0.00368) -- die Baender sind also kein Versatz ganzer Zeilen.
+    The optical flow produces narrow horizontal bands that are not present in the
+    raw frames. This function subtracts the outlier of the row median against its
+    running median. In an A/B test on the same map that changes nothing (36
+    conspicuous rows with and without, amplitude 0.00366 against 0.00368) -- so
+    the bands are not an offset of whole rows.
 
-    Wichtiger ist das Ergebnis der Amplitudenmessung: die Baender machen **2.9 %
-    der Reliefspanne** aus, das Kronenrelief ist rund 35-mal staerker. Fuer
-    Wipfelsuche und Watershed liegen sie im Rauschen. Dass sie in der
-    Schattierung so kraeftig aussehen, liegt an der Darstellung -- ein Hillshade
-    zeigt Ableitungen, und eine kleine Stoerung mit scharfer Kante erzeugt darin
-    mehr Kontrast als eine grosse, weiche Kuppel. Die Funktion bleibt fuer den
-    Fall stehen, dass ein anderes Video echte Zeilenversaetze zeigt.
+    More important is the amplitude measurement: the bands amount to **2.9 % of
+    the relief range**, and the crown relief is about 35 times stronger. For
+    treetop finding and watershed they are in the noise. That they look so strong
+    in the hillshading is a matter of rendering -- a hillshade shows derivatives,
+    and a small disturbance with a sharp edge creates more contrast in it than a
+    large, soft dome. The function stays in place for the case that another video
+    does show real row offsets.
     """
     rows = np.median(surface, axis=1)
     half = window // 2
@@ -79,7 +79,7 @@ def destripe(surface: np.ndarray, window: int) -> np.ndarray:
 
 
 def extract(video: Path, out_dir: Path, start: int, stride: int, count: int) -> list[Path]:
-    """Jeden n-ten Frame als JPEG ablegen -- der Rest der Pipeline liest Bilder."""
+    """Store every n-th frame as JPEG -- the rest of the pipeline reads images."""
     out_dir.mkdir(parents=True, exist_ok=True)
     capture = cv2.VideoCapture(str(video))
     if not capture.isOpened():
@@ -105,15 +105,15 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--video", type=Path, default=Path("/cold/Mahfuz/DJI_20230506174726_0004_Z_80m.MP4"))
     parser.add_argument("--out", type=Path, default=Path("/scratch/shared/nik/data/treeclf/video"))
-    parser.add_argument("--name", default=None, help="Ordnername; Vorgabe ist der Videoname.")
+    parser.add_argument("--name", default=None, help="Folder name; defaults to the video name.")
     parser.add_argument("--start", type=int, default=0)
-    parser.add_argument("--stride", type=int, default=10, help="Jeder n-te Videoframe.")
+    parser.add_argument("--stride", type=int, default=10, help="Every n-th video frame.")
     parser.add_argument("--count", type=int, default=60)
     parser.add_argument("--offsets", type=int, nargs="*", default=[2, 4, 8],
-                        help="Partnerabstaende in extrahierten Frames, jeweils vor und zurueck.")
+                        help="Partner distances in extracted frames, forwards and backwards.")
 
     parser.add_argument("--min-displacement", type=float, default=8.0,
-                        help="Paare mit weniger Kamerabewegung liefern nur Rauschen.")
+                        help="Pairs with less camera motion return only noise.")
     parser.add_argument("--min-overlap", type=float, default=0.5)
     parser.add_argument("--max-features", type=int, default=8000)
     parser.add_argument("--ransac-thresh", type=float, default=3.0)
@@ -123,10 +123,10 @@ def main() -> None:
     parser.add_argument("--winsize", type=int, default=41)
     parser.add_argument("--levels", type=int, default=5)
     parser.add_argument("--destripe", type=int, default=0,
-                        help="Zeilenkorrektur; gemessen wirkungslos, siehe destripe(). 0 = aus.")
+                        help="Row correction; measured to have no effect, see destripe(). 0 = off.")
     parser.add_argument("--smooth", type=float, default=2.5)
     parser.add_argument("--detrend-sigma", type=float, default=180.0,
-                        help="Nur fuer die Vorschau: Breite des abgezogenen Trends.")
+                        help="Preview only: width of the subtracted trend.")
     args = parser.parse_args()
 
     name = args.name or args.video.stem
@@ -147,12 +147,11 @@ def main() -> None:
     written = 0
 
     for index, target in enumerate(paths):
-        # Pixelweise Summe und Zaehler statt einer Liste: ein Partnerframe deckt
-        # das Zielbild nur teilweise ab, und `parallax_map` liefert ausserhalb
-        # der Ueberlappung Null. Ein einfacher Mittelwert zieht den Wert dort
-        # herunter, wo weniger Partner beitragen -- das erzeugt gerade
-        # Nahtkanten quer durch die Karte, genau entlang der Bildraender der
-        # gewarpten Partner.
+        # A per-pixel sum and counter instead of a list: a partner frame covers
+        # the target image only partly, and `parallax_map` returns zero outside
+        # the overlap. A plain mean pulls the value down where fewer partners
+        # contribute -- which creates straight seam edges across the map, exactly
+        # along the image borders of the warped partners.
         total = np.zeros(images[index].shape[:2], np.float32)
         counts = np.zeros(images[index].shape[:2], np.float32)
         used = []
@@ -167,7 +166,7 @@ def main() -> None:
                 if (stats["verschiebung_median_px"] < args.min_displacement
                         or stats["ueberlappung"] < args.min_overlap):
                     continue
-                # Auf Basislinie 1 normieren, sonst dominiert das weiteste Paar.
+                # Normalise to baseline 1, otherwise the widest pair dominates.
                 valid = residual > 0
                 total += np.where(valid, residual / stats["verschiebung_median_px"], 0.0)
                 counts += valid
@@ -178,18 +177,18 @@ def main() -> None:
             continue
 
         merged = np.divide(total, counts, out=np.zeros_like(total), where=counts > 0)
-        # Loecher ohne jeden Beitrag mit dem Bildmittel fuellen, damit die
-        # spaetere Glaettung sie nicht in die Umgebung hineinzieht.
+        # Fill holes with no contribution at all with the image mean, so that the
+        # later smoothing does not drag them into their surroundings.
         if (counts == 0).any():
             merged[counts == 0] = float(merged[counts > 0].mean())
         if args.destripe > 1:
             merged = destripe(merged, args.destripe)
         merged = cv2.GaussianBlur(merged, (0, 0), args.smooth).astype(np.float32)
         np.save(cache_dir / f"{name}__{target.stem}.npy", merged)
-        # Die Homographie passt eine Ebene an, die den Boden nur naeherungsweise
-        # trifft -- uebrig bleibt ein grossflaechiger Verlauf ueber das Bild.
-        # Fuer die Vorschau abgezogen; gespeichert wird die rohe Karte, damit
-        # nachgelagerte Skripte selbst entscheiden koennen.
+        # The homography fits a plane that only approximates the ground -- what
+        # remains is a large-scale gradient across the image. Subtracted for the
+        # preview; the raw map is what gets stored, so that downstream scripts can
+        # decide for themselves.
         trend = cv2.GaussianBlur(merged, (0, 0), args.detrend_sigma)
         surface = normalize(merged - trend)
         cv2.imwrite(str(preview_dir / f"{target.stem}_parallax.jpg"),

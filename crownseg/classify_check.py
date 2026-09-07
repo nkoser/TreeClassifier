@@ -1,23 +1,22 @@
-"""Den Artklassifikator auf seiner eigenen Domaene pruefen.
+"""Check the species classifier on its own domain.
 
-Auf Nik's Frames liefert DINOvTree unplausible Antworten -- ein Kiefernbestand
-wird als Gelb-Birke klassifiziert, also nicht einmal die richtige Grossgruppe.
-Zwei Erklaerungen kommen dafuer in Frage, und sie fuehren zu voellig
-verschiedenen Konsequenzen:
+On our frames DINOvTree gives implausible answers -- a pine stand is classified
+as yellow birch, so not even the right broad group. Two explanations are
+possible, and they lead to completely different consequences:
 
-  Uebertragung   Der Checkpoint kennt 14 kanadische Klassen und versagt auf
-                 mitteleuropaeischen Bestaenden. Dann braucht es eigene Labels.
-  Verdrahtung    Massstab, Ausschnitt, Kanalreihenfolge oder Normierung stimmen
-                 in unserem Aufruf nicht. Dann ist es ein Fehler im Code.
+  transfer       The checkpoint knows 14 Canadian classes and fails on Central
+                 European stands. Then we need our own labels.
+  wiring         Scale, crop, channel order or normalisation are wrong in our
+                 call. Then it is a bug in the code.
 
-Quebec Zone 3 trennt beides: dieselbe Domaene, auf der der Checkpoint trainiert
-wurde, mit Artlabels an jeder Krone. Klassifiziert wird hier auf der **Wahrheit**
-statt auf Vorhersagen, damit die Segmentierung das Ergebnis nicht mitbestimmt --
-gemessen wird allein Stufe 2.
+Quebec zone 3 separates the two: the same domain the checkpoint was trained on,
+with species labels on every crown. Classification here runs on the **ground
+truth** rather than on predictions, so that the segmentation does not co-determine
+the result -- what is measured is stage 2 alone.
 
-Vorbehalt: ob Zone 3 im Trainingssplit von DINOvTree lag, ist unbekannt. Ein
-guter Wert waere dann geschoent. Ein schlechter Wert ist dagegen aussagekraeftig,
-denn eine Domaene, auf der trainiert wurde, sollte nicht scheitern.
+Caveat: whether zone 3 was in the training split of DINOvTree is unknown. A good
+value would then be flattered. A bad value, by contrast, is meaningful, because a
+domain that was trained on should not fail.
 
     python crownseg/classify_check.py --zone zone3
 """
@@ -43,7 +42,7 @@ from infer_species import (  # noqa: E402
 )
 from quebec import wkb_rings  # noqa: E402
 
-# Quebec-Kuerzel -> wissenschaftlicher Name, wie er im Label-Satz steht.
+# Quebec abbreviation -> scientific name as it appears in the label set.
 KUERZEL = {
     "ABBA": "Abies balsamea", "ACPE": "Acer pensylvanicum", "ACRU": "Acer rubrum",
     "ACSA": "Acer saccharum", "BEAL": "Betula alleghaniensis", "BEPA": "Betula papyrifera",
@@ -122,9 +121,9 @@ def main() -> None:
     probabilities, _ = classify_crops(model, crops, args.batch_size, device)
     predicted = [short_name(class_names[k]) for k in probabilities.argmax(axis=1)]
 
-    # Beide Seiten auf dieselbe Kurzform bringen. Die Wahrheit steht
-    # ausgeschrieben ("Abies balsamea"), die Vorhersage abgekuerzt
-    # ("A. balsamea") -- als Zeichenketten verglichen stimmen sie nie ueberein.
+    # Bring both sides to the same short form. The truth is spelled out
+    # ("Abies balsamea"), the prediction abbreviated ("A. balsamea") -- compared
+    # as strings they would never match.
     def kurz(name: str) -> str:
         teile = name.split()
         return f"{teile[0][0]}. {teile[-1]}" if len(teile) > 1 else name

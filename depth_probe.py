@@ -1,18 +1,18 @@
-"""Probe: liefert monokulare Tiefenschaetzung ein brauchbares Kronenrelief?
+"""Probe: does monocular depth estimation give a usable crown relief?
 
-Kronenabgrenzung im geschlossenen Kronendach scheitert an fehlender Hoehen-
-information -- zwei benachbarte gruene Kronen haben im RGB oft keine sichtbare
-Grenze. In der Forstpraxis loest das ein CHM (Canopy Height Model): Wipfel als
-lokale Maxima, Grenzen per Watershed. Ohne Photogrammetrie gibt es hier kein CHM,
-aber ein monokulares Tiefenmodell koennte als Ersatz taugen.
+Crown delineation in a closed canopy fails for lack of height information -- two
+neighbouring green crowns often have no visible boundary in RGB. In forestry
+practice a CHM (canopy height model) solves that: treetops as local maxima,
+boundaries by watershed. Without photogrammetry there is no CHM here, but a
+monocular depth model might serve as a substitute.
 
-Dieses Skript rechnet die Tiefenkarten und speichert sie kolorisiert, plus eine
-Schattierung (Hillshade), in der Kronenrelief fuer das Auge am besten sichtbar
-ist. Absolute Metrik ist dabei irrelevant und ohnehin unbrauchbar -- die Modelle
-sind auf Bodenperspektiven trainiert, nicht auf Nadir aus 80 m. Entscheidend ist
-allein, ob die *relative* Struktur Wipfel und Kronenluecken trennt.
+This script computes the depth maps and stores them colourised, plus a
+hillshade, in which crown relief is most visible to the eye. Absolute metric
+accuracy is irrelevant here and unusable anyway -- the models are trained on
+ground perspectives, not on nadir from 80 m. All that counts is whether the
+*relative* structure separates treetops from canopy gaps.
 
-Beispiel:
+Example:
     python depth_probe.py --frames pines/frame_000006.jpg dense/frame_000073.jpg
 """
 
@@ -41,7 +41,7 @@ DEFAULT_FRAMES = [
 
 
 def normalize(surface: np.ndarray) -> np.ndarray:
-    """Auf [0, 1] robust gegen Ausreisser (2./98. Perzentil)."""
+    """To [0, 1], robust against outliers (2nd/98th percentile)."""
     low, high = np.percentile(surface, [2, 98])
     if high - low < 1e-9:
         return np.zeros_like(surface, dtype=np.float32)
@@ -49,7 +49,7 @@ def normalize(surface: np.ndarray) -> np.ndarray:
 
 
 def hillshade(surface: np.ndarray, azimuth_deg: float = 315.0, altitude_deg: float = 45.0) -> np.ndarray:
-    """Reliefschattierung -- macht feine Hoehenunterschiede sichtbar."""
+    """Hillshading -- makes fine height differences visible."""
     dy, dx = np.gradient(cv2.GaussianBlur(surface, (0, 0), 2.0))
     slope = np.arctan(np.hypot(dx, dy) * 40.0)
     aspect = np.arctan2(-dx, dy)
@@ -60,7 +60,7 @@ def hillshade(surface: np.ndarray, azimuth_deg: float = 315.0, altitude_deg: flo
 
 @torch.no_grad()
 def estimate_depth(model_id: str, image_rgb: np.ndarray, device) -> np.ndarray:
-    """Gibt die vorhergesagte Tiefe in Originalaufloesung zurueck."""
+    """Returns the predicted depth at the original resolution."""
     from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
     processor = AutoImageProcessor.from_pretrained(model_id)
@@ -100,12 +100,12 @@ def main() -> None:
                 print(f"  fehlt: {frame_path}")
                 continue
 
-            # cvtColor statt [:, :, ::-1]: der Slice-View hat negative Strides,
-            # die der HF-Bildprozessor nicht in einen Tensor umwandeln kann.
+            # cvtColor rather than [:, :, ::-1]: the slice view has negative
+            # strides, which the HF image processor cannot turn into a tensor.
             image_rgb = cv2.cvtColor(cv2.imread(str(frame_path)), cv2.COLOR_BGR2RGB)
             depth = estimate_depth(model_id, image_rgb, device)
 
-            # Naeher an der Kamera = hoeherer Baum, deshalb invertieren.
+            # Closer to the camera = taller tree, hence the inversion.
             surface = normalize(-depth)
             out_folder = args.out / frame_path.parent.name
             out_folder.mkdir(parents=True, exist_ok=True)
@@ -122,7 +122,7 @@ def main() -> None:
                 [cv2.IMWRITE_JPEG_QUALITY, 92],
             )
 
-            # Kontrast der Oberflaeche: wie viel Relief steckt drin?
+            # Contrast of the surface: how much relief is in there?
             smoothed = cv2.GaussianBlur(surface, (0, 0), 3.0)
             print(
                 f"  {relative}: Tiefe {depth.min():.2f}..{depth.max():.2f} "

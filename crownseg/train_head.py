@@ -1,25 +1,24 @@
-"""Artklassifikator fuer mitteleuropaeische Baeume.
+"""Species classifier for Central European trees.
 
-Der veroeffentlichte DINOvTree-Kopf kennt 14 kanadische Klassen. Auf Quebec
-erreicht er 90.1 %, auf Nik's Bestaenden liefert er Unsinn -- ein Kiefernbestand
-wird zu Gelb-Birke, weil *Pinus sylvestris* im Label-Satz fehlt und das Modell
-antworten muss. Das Problem ist also nicht der Backbone, sondern die Klassen, auf
-die er zeigt.
+The published DINOvTree head knows 14 Canadian classes. On Quebec it reaches
+90.1 %, on our stands it delivers nonsense -- a pine stand becomes yellow birch,
+because *Pinus sylvestris* is missing from the label set and the model has to
+answer. So the problem is not the backbone but the classes it points at.
 
-Hier bleibt der Backbone unveraendert und eingefroren; neu ist nur der Kopf. Die
-Trainingsdaten kommen aus `fortress.py`: 9373 Kronenausschnitte, beschriftet
-durch Verschneidung unserer Segmentierung mit den Artpolygonen von FORTRESS.
+Here the backbone stays unchanged and frozen; only the head is new. The training
+data come from `fortress.py`: 9373 crown crops, labelled by intersecting our
+segmentation with the species polygons of FORTRESS.
 
-Zwei Entscheidungen bestimmen, ob die Zahl am Ende etwas wert ist:
+Two decisions determine whether the final number is worth anything:
 
-  Aufteilung nach Gebiet, nicht zufaellig. Ausschnitte desselben Gebiets teilen
-  Beleuchtung, Aufnahmetag und teils denselben Baum -- eine zufaellige Aufteilung
-  wuerde die Guete deutlich schoenrechnen. Kattenborn et al. haben genau das fuer
-  raeumlich autokorrelierte Waldddaten gezeigt.
+  Split by site, not at random. Crops from the same site share illumination,
+  capture date and sometimes the same tree -- a random split would flatter the
+  result considerably. Kattenborn et al. showed exactly that for spatially
+  autocorrelated forest data.
 
-  Seltene Klassen getrennt ausweisen. Fichte hat 4669 Beispiele, Esche 8. Eine
-  Gesamtgenauigkeit waere hier vor allem ein Mass dafuer, wie oft Fichte richtig
-  erkannt wird.
+  Report rare classes separately. Spruce has 4669 examples, ash 8. An overall
+  accuracy here would above all measure how often spruce is recognised
+  correctly.
 
     python crownseg/train_head.py --min-per-class 100
 """
@@ -48,7 +47,7 @@ from infer_species import (  # noqa: E402
 
 
 def merkmale(crops: np.ndarray, model, device, batch_size: int) -> np.ndarray:
-    """Backbone-Merkmale je Ausschnitt -- einmal gerechnet, danach wiederverwendet."""
+    """Backbone features per crop -- computed once, then reused."""
     features, _ = extract_features(model, crops, batch_size, device, "backbone")
     return features
 
@@ -63,8 +62,8 @@ def main() -> None:
     parser.add_argument("--out", type=Path,
                         default=Path("/scratch/shared/nik/data/treeclf/checkpoints/kopf_fortress.pth"))
     parser.add_argument("--min-per-class", type=int, default=100,
-                        help="Klassen darunter fliegen raus -- zu wenig zum Lernen und zum Messen.")
-    parser.add_argument("--test-sites", type=float, default=0.25, help="Anteil der Gebiete fuer den Test.")
+                        help="Classes below this are dropped -- too few to learn or to measure.")
+    parser.add_argument("--test-sites", type=float, default=0.25, help="Share of sites used for the test.")
     parser.add_argument("--epochs", type=int, default=60)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--hidden", type=int, default=512)
@@ -75,8 +74,8 @@ def main() -> None:
     args = parser.parse_args()
 
     device = resolve_device(args.device)
-    torch.manual_seed(args.seed)   # ohne festen Startwert schwankt die
-    # ausgewogene Genauigkeit zwischen Laeufen um rund 2 Punkte.
+    torch.manual_seed(args.seed)   # without a fixed seed the balanced accuracy
+    # fluctuates between runs by about 2 points.
     tabelle = pd.read_csv(args.data / "kronen.csv")
     haeufig = tabelle["art"].value_counts()
     behalten = haeufig[haeufig >= args.min_per_class].index.tolist()
@@ -86,7 +85,7 @@ def main() -> None:
     print(f"{len(tabelle)} Ausschnitte | {len(klassen)} Klassen: {', '.join(klassen)}")
     print(f"verworfen: {', '.join(f'{k} ({v})' for k, v in haeufig.items() if k not in behalten)}\n", flush=True)
 
-    # Aufteilung nach Gebiet -- nicht nach Ausschnitt.
+    # Split by site -- not by crop.
     gebiete = sorted(tabelle["gebiet"].unique())
     rng = np.random.default_rng(0)
     test_gebiete = set(rng.permutation(gebiete)[: max(1, int(len(gebiete) * args.test_sites))])
@@ -107,8 +106,8 @@ def main() -> None:
     print(f"Merkmalsdimension {features.shape[1]}\n", flush=True)
 
     X = torch.from_numpy(features.copy()).float()
-    # Standardisierung aus dem Trainingsteil -- wandert mit in den Checkpoint,
-    # sonst bekommt der Kopf beim Anwenden Eingaben auf anderer Skala.
+    # Standardisation from the training part -- it travels into the checkpoint,
+    # otherwise the head gets inputs on a different scale at inference.
     mittel, streuung = X[~ist_test].mean(0), X[~ist_test].std(0).clamp_min(1e-6)
     X = (X - mittel) / streuung
     y = torch.from_numpy(ziel).long()
@@ -117,8 +116,8 @@ def main() -> None:
 
     kopf = nn.Sequential(nn.Linear(X.shape[1], args.hidden), nn.GELU(),
                          nn.Dropout(0.3), nn.Linear(args.hidden, len(klassen))).to(device)
-    # Klassengewichte: Fichte hat 4669 Beispiele, Douglasie 157. Ohne Ausgleich
-    # lernt der Kopf vor allem, Fichte zu sagen.
+    # Class weights: spruce has 4669 examples, Douglas fir 157. Without balancing
+    # the head mainly learns to say spruce.
     anzahl = np.bincount(ziel[~ist_test], minlength=len(klassen))
     gewicht = torch.tensor(len(anzahl) / np.maximum(1, anzahl) / (1 / np.maximum(1, anzahl)).sum(),
                            dtype=torch.float32, device=device)
@@ -140,7 +139,7 @@ def main() -> None:
         kopf.eval()
         with torch.no_grad():
             vorhersage = kopf(Xte).argmax(1)
-        # Ausgewogene Genauigkeit: Mittel der Trefferquoten je Klasse.
+        # Balanced accuracy: the mean of the per-class recalls.
         quoten = [(vorhersage[yte == k] == k).float().mean().item()
                   for k in range(len(klassen)) if (yte == k).any()]
         ausgewogen = float(np.mean(quoten))

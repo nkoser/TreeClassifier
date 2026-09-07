@@ -1,24 +1,25 @@
-"""Dichte DINOv3-Merkmale: taugen die Flaechenmerkmale zum Clustern?
+"""Dense DINOv3 features: are the patch features usable for clustering?
 
-Bisher lief alles ueber Ausschnitte: eine Krone wird ausgeschnitten, der
-Backbone liefert *einen* Vektor, der wird geclustert oder klassifiziert. DINOv3
-liefert aber je 16x16-Bildfeld einen eigenen Vektor, und diese Feldmerkmale
-tragen bekanntlich eine emergente Segmentierung -- Objekte trennen sich in den
-Merkmalen, ohne dass jemand Masken gezeigt hat (LOST, TokenCut, STEGO).
+So far everything ran over crops: a crown is cut out, the backbone delivers
+*one* vector, and that gets clustered or classified. DINOv3, however, delivers
+its own vector per 16x16 patch, and these patch features are known to carry an
+emergent segmentation -- objects separate in the features without anyone having
+shown a mask (LOST, TokenCut, STEGO).
 
-Zwei Fragen, die davon abhaengen, und die getrennt gemessen gehoeren:
+Two questions depend on that, and they belong measured separately:
 
-  Flaeche -> Art   Trennen die Feldmerkmale Baumarten, ohne Labels? Gemessen
-                   auf FORTRESS gegen die Artpolygone. Mitgemessen wird
-                   dieselbe Groesse auf reiner RGB-Farbe -- wenn Farbe schon
-                   fast so gut trennt, hat der Backbone wenig beigetragen, und
-                   der Verdacht "sortiert Herbstfarben statt Arten" steht.
+  area -> species  Do the patch features separate tree species, without labels?
+                   Measured on FORTRESS against the species polygons. The same
+                   quantity is measured on plain RGB colour as well -- if colour
+                   already separates almost as well, the backbone contributed
+                   little, and the suspicion "sorts autumn colours, not species"
+                   stands.
 
-  Flaeche -> Baum  Trennen sie *einzelne* Kronen? Gemessen auf BAMFORESTS gegen
-                   die Kronenpolygone: Zusammenhangskomponenten der Cluster als
-                   Instanzen, F1 bei IoU 0.5. Meine Erwartung ist hier niedrig
-                   -- benachbarte Fichten sind semantisch identisch, und genau
-                   das ist der schwere Teil der Kronenabgrenzung.
+  area -> tree     Do they separate *individual* crowns? Measured on BAMFORESTS
+                   against the crown polygons: connected components of the
+                   clusters as instances, F1 at IoU 0.5. Expectations here are
+                   low -- neighbouring spruces are semantically identical, and
+                   that is exactly the hard part of crown delineation.
 
     python crownseg/dinocluster.py --modus art --sites CFB014 CFB019
     python crownseg/dinocluster.py --modus instanz
@@ -48,10 +49,10 @@ BAM_GSD_M = 0.0170
 
 @torch.no_grad()
 def feldmerkmale(backbone, bild_rgb: np.ndarray, device) -> np.ndarray:
-    """Feldmerkmale eines Bildes als (h, w, d).
+    """Patch features of one image as (h, w, d).
 
-    Das Bild geht in voller Kachelgroesse hinein, nicht auf 512 skaliert: die
-    Ortsaufloesung der Felder ist hier das Ergebnis, nicht ein Nebenprodukt.
+    The image goes in at full tile size, not scaled to 512: the spatial resolution
+    of the patches is the result here, not a by-product.
     """
     x = torch.from_numpy(np.transpose(bild_rgb.astype(np.float32) / 255.0, (2, 0, 1)))
     felder, _ = backbone(x[None].to(device))
@@ -62,7 +63,7 @@ def feldmerkmale(backbone, bild_rgb: np.ndarray, device) -> np.ndarray:
 
 
 def kmeans(punkte: np.ndarray, k: int, seed: int = 0, runden: int = 40) -> tuple[np.ndarray, np.ndarray]:
-    """k-Means auf L2-normierten Vektoren -- Kosinusabstand, wie bei DINO ueblich."""
+    """k-means on L2-normalised vectors -- cosine distance, as usual with DINO."""
     x = punkte / np.linalg.norm(punkte, axis=1, keepdims=True).clip(1e-6)
     rng = np.random.default_rng(seed)
     zentren = x[rng.choice(len(x), k, replace=False)]
@@ -76,7 +77,7 @@ def kmeans(punkte: np.ndarray, k: int, seed: int = 0, runden: int = 40) -> tuple
 
 
 def nmi_und_reinheit(cluster: np.ndarray, wahrheit: np.ndarray) -> tuple[float, float]:
-    """Normierte Transinformation und Reinheit zwischen zwei Zuordnungen."""
+    """Normalised mutual information and purity between two assignments."""
     k, c = cluster.max() + 1, wahrheit.max() + 1
     tafel = np.zeros((k, c))
     np.add.at(tafel, (cluster, wahrheit), 1)
@@ -91,7 +92,7 @@ def nmi_und_reinheit(cluster: np.ndarray, wahrheit: np.ndarray) -> tuple[float, 
 
 
 def komponenten(karte: np.ndarray, kachel: int, min_flaeche: int) -> list[met.Instance]:
-    """Zusammenhangskomponenten je Clusterwert als Instanzen."""
+    """Connected components per cluster value, as instances."""
     gross = cv2.resize(karte.astype(np.int32), (kachel, kachel), interpolation=cv2.INTER_NEAREST)
     heraus = []
     for wert in np.unique(gross):
@@ -115,7 +116,7 @@ PALETTE = np.array([
 
 
 def einfaerben(karte: np.ndarray, form: tuple[int, int]) -> np.ndarray:
-    """Clusterkarte als BGR-Bild in Zielgroesse."""
+    """Cluster map as a BGR image at the target size."""
     farbig = PALETTE[karte % len(PALETTE)][:, :, ::-1]
     return cv2.resize(farbig, form[::-1], interpolation=cv2.INTER_NEAREST)
 
@@ -131,11 +132,11 @@ def nebeneinander(teile: list[tuple[str, np.ndarray]]) -> np.ndarray:
 
 
 def modus_bild(args, backbone, device) -> None:
-    """Clusterkarten zum Anschauen -- auf den eigenen Frames.
+    """Cluster maps for looking at -- on our own frames.
 
-    Die Zahlen sagen, dass die Feldmerkmale Arten trennen und Kronen nicht.
-    Hier ist zu sehen, was das bedeutet: zusammenhaengende Flaechen gleicher
-    Farbe folgen Bestandsgrenzen, nicht Baumgrenzen.
+    The numbers say the patch features separate species and not crowns. Here you
+    can see what that means: contiguous areas of the same colour follow stand
+    boundaries, not tree boundaries.
     """
     args.out.mkdir(parents=True, exist_ok=True)
     frames = []
@@ -147,7 +148,7 @@ def modus_bild(args, backbone, device) -> None:
     for pfad in frames:
         bild = cv2.imread(str(pfad))
         hoehe, breite = bild.shape[:2]
-        # Auf ein Vielfaches der Feldgroesse bringen, Seitenverhaeltnis behalten.
+        # Bring it to a multiple of the patch size, keeping the aspect ratio.
         neu_b = args.kachel
         neu_h = int(round(hoehe * neu_b / breite / 16)) * 16
         klein = cv2.resize(bild, (neu_b, neu_h), interpolation=cv2.INTER_AREA)
@@ -174,7 +175,7 @@ def lade_backbone(args, device):
 
 
 def modus_art(args, backbone, device) -> None:
-    """Feldmerkmale gegen die Artpolygone von FORTRESS."""
+    """Patch features against the species polygons of FORTRESS."""
     import rasterio
     from rasterio.windows import Window
 
@@ -229,10 +230,10 @@ def modus_art(args, backbone, device) -> None:
                     yy, xx = np.mgrid[0:seite, 0:seite]
                     merkmale.append(f[gueltig])
                     farben.append(rgb_klein[gueltig].astype(np.float32))
-                    # Nur der Ort im Bild, je Kachel getrennt: wenn schon das
-                    # einen guten NMI ergibt, misst die Zahl oben vor allem,
-                    # dass Arten in Bestaenden zusammenstehen -- nicht, dass
-                    # die Merkmale Arten kennen.
+                    # Position in the image alone, per tile: if even that yields a
+                    # good NMI, then the number above mainly measures that species
+                    # stand together in stands -- not that the features know
+                    # species.
                     orte.append(np.stack([xx[gueltig], yy[gueltig],
                                           np.full(gueltig.sum(), genommen * 1000.0)], 1))
                     wahr.append(klein[gueltig])
@@ -261,7 +262,7 @@ def modus_art(args, backbone, device) -> None:
 
 
 def modus_instanz(args, backbone, device) -> None:
-    """Feldmerkmale gegen die Kronenpolygone von BAMFORESTS."""
+    """Patch features against the crown polygons of BAMFORESTS."""
     import bamforests as bam
 
     index = json.loads((args.bamforests / "annotations.json").read_text())
@@ -270,7 +271,7 @@ def modus_instanz(args, backbone, device) -> None:
     skal = args.kachel / 2048.0
     print(f"{len(auswahl)} Kacheln aus {args.bamforests}\n", flush=True)
 
-    # Merkmale einmal rechnen, dann alle k darauf.
+    # Compute the features once, then run every k on them.
     zwischen = []
     for stem in auswahl:
         bild = cv2.cvtColor(cv2.imread(str(args.bamforests / f"{stem}.jpg")), cv2.COLOR_BGR2RGB)

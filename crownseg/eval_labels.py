@@ -1,18 +1,18 @@
-"""Beliebige Labelkarten gegen die BAMFORESTS-Wahrheit messen.
+"""Measure any label maps against the BAMFORESTS ground truth.
 
-Damit sind die Verfahren untereinander vergleichbar: SAM 3 mit Textprompt, die
-Tiefen-Prompt-Kombination, der Hybrid, `crownnet.py` und Mask R-CNN liefern alle
-`<stem>_labels.png`. Dieses Skript liest so einen Ordner, holt die passende
-Wahrheit aus dem aufbereiteten Split und rechnet dieselben Zahlen wie
+That makes the methods comparable with each other: SAM 3 with a text prompt, the
+depth-prompt combination, the hybrid, `crownnet.py` and Mask R-CNN all produce
+`<stem>_labels.png`. This script reads such a folder, fetches the matching truth
+from the prepared split and computes the same numbers as
 `maskrcnn.py --mode eval`.
 
-Die Labelkarten duerfen kleiner sein als die 2048er Kachel (SAM 3 lief auf
-0.7-fach verkleinerten Bildern) -- die Wahrheit wird dann mitskaliert statt die
-Vorhersage hochzurechnen, damit keine Treppen in die Masken kommen.
+The label maps may be smaller than the 2048 tile (SAM 3 ran on images scaled
+down by 0.7) -- the truth is then scaled along instead of upscaling the
+prediction, so that no staircase artefacts enter the masks.
 
-AP ist hier ohne Aussage: eine Labelkarte hat keine Konfidenz je Instanz, die
-Rangfolge ist also willkuerlich. Aussagekraeftig sind Praezision, Trefferquote,
-F1 und die mittlere IoU der Treffer.
+AP says nothing here: a label map has no per-instance confidence, so the ranking
+is arbitrary. What is meaningful is precision, recall, F1 and the mean IoU of
+the hits.
 
     python crownseg/eval_labels.py --labels results_sam3_bam/test1 --split test1
 """
@@ -47,11 +47,11 @@ def instances_from_label_map(labels: np.ndarray, min_area: int) -> list[met.Inst
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--labels", type=Path, required=True, help="Ordner mit <stem>_labels.png")
+    parser.add_argument("--labels", type=Path, required=True, help="Folder holding <stem>_labels.png")
     parser.add_argument("--split", default="test1", choices=("train", "val", "test1", "test2"))
     parser.add_argument("--prepared", type=Path, default=bam.BAMFORESTS / "crownseg")
-    parser.add_argument("--name", default=None, help="Bezeichnung des Verfahrens in der Ausgabe.")
-    parser.add_argument("--min-area", type=int, default=400, help="Auf 2048er Massstab bezogen.")
+    parser.add_argument("--name", default=None, help="Label for the method in the output.")
+    parser.add_argument("--min-area", type=int, default=400, help="Relative to the 2048 scale.")
     parser.add_argument("--iou-thresh", type=float, default=0.5)
     args = parser.parse_args()
 

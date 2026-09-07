@@ -1,27 +1,25 @@
-"""Query-basierte Kroneninstanzen: EoMT und Mask2Former auf BAMFORESTS.
+"""Query-based crown instances: EoMT and Mask2Former on BAMFORESTS.
 
-Beide Architekturen sagen feste Anfragen ("queries") vorher, jede mit einer
-eigenen Maske und einem eigenen Score -- keine Anker, kein NMS, keine
-Watershed-Nachbearbeitung. Das raeumt strukturell den Fehler aus, an dem Mask
-R-CNN in Hain gescheitert ist: dort deckten die Anker 32 bis 512 px ab, die
-Kronen reichen bis 842 px, und alles darueber konnte die RPN gar nicht erst
-vorschlagen. Eine Query hat keine Groessenannahme.
+Both architectures predict fixed queries, each with its own mask and its own
+score -- no anchors, no NMS, no watershed post-processing. That structurally
+removes the error Mask R-CNN failed on in Hain: there the anchors covered 32 to
+512 px, the crowns reach up to 842 px, and anything above that could not even be
+proposed by the RPN. A query has no size assumption.
 
-  eomt          Encoder-only Mask Transformer (CVPR 2025) mit DINOv3-Backbone.
-                Kein Pixeldecoder, kein Transformerdecoder -- der ViT selbst
-                traegt die Queries. Passt zum Projekt, weil DINOv3 ueber den
-                DINOvTree-Checkpoint ohnehin schon da ist.
-  mask2former   Masked-Attention-Decoder auf Swin. Reifer und breiter erprobt,
-                besonders bei dicht gedraengten Instanzen.
+  eomt          Encoder-only Mask Transformer (CVPR 2025) with a DINOv3 backbone.
+                No pixel decoder, no transformer decoder -- the ViT itself carries
+                the queries. It fits the project because DINOv3 is already here
+                via the DINOvTree checkpoint anyway.
+  mask2former   Masked-attention decoder on Swin. More mature and more widely
+                proven, especially with densely packed instances.
 
-Beide laufen ueber denselben Datenpfad (`bamforests.CrownCrops`), dieselbe
-Fensterlogik (`tiling.slide`) und dieselbe Metrik (`metrics`). Was verglichen
-wird, ist damit die Architektur und nicht die Umgebung drumherum.
+Both run over the same data path (`bamforests.CrownCrops`), the same window
+logic (`tiling.slide`) and the same metric (`metrics`). What is compared is
+therefore the architecture and not the environment around it.
 
-Beide sehen denselben Bodenausschnitt: ein 1024-px-Ausschnitt der Kachel, auf
-die Eingabegroesse des Modells skaliert. Gleiche Flaeche, gleiche Kronengroesse
-in Metern -- nur die Pixelzahl unterscheidet sich, und die gehoert zur
-Architektur.
+Both see the same ground footprint: a 1024 px crop of the tile, scaled to the
+input size of the model. Same area, same crown size in metres -- only the pixel
+count differs, and that belongs to the architecture.
 
     python crownseg/queryseg.py --arch eomt --mode train
     python crownseg/queryseg.py --arch mask2former --mode eval
@@ -49,18 +47,18 @@ from tiling import draw_overlay, slide, suppress, to_label_map  # noqa: E402
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CHECKPOINTS = Path(f"/scratch/shared/{os.environ.get('USER', 'nik')}/data/treeclf/checkpoints")
 
-# Die `tue-mps/<task>_eomt_<...>`-Repos sind das Originalformat der Autoren
-# und haben keine config.json. Die nach transformers konvertierten liegen
-# unter der Bindestrich-Form `eomt-dinov3-coco-instance-large-640`.
+# The `tue-mps/<task>_eomt_<...>` repos are the authors' original format and have
+# no config.json. The versions converted to transformers live under the
+# hyphenated form `eomt-dinov3-coco-instance-large-640`.
 ARCHS = {
     "eomt": "tue-mps/eomt-dinov3-coco-instance-large-640",
     "mask2former": "facebook/mask2former-swin-base-coco-instance",
 }
 IMAGENET_MEAN = torch.tensor([0.485, 0.456, 0.406]).view(3, 1, 1)
 IMAGENET_STD = torch.tensor([0.229, 0.224, 0.225]).view(3, 1, 1)
-# Die Tiefe ist je Kachel auf 0..255 gespreizt, also ungefaehr gleichverteilt.
-# Mittelwert 0.5 und Streuung 0.29 machen daraus etwa denselben Wertebereich wie
-# bei den ImageNet-normierten Farbkanaelen.
+# The depth is stretched to 0..255 per tile, so it is roughly uniform. Mean 0.5
+# and std 0.29 put it in about the same value range as the ImageNet-normalised
+# colour channels.
 DEPTH_MEAN, DEPTH_STD = 0.5, 0.29
 
 
@@ -72,18 +70,18 @@ def stats(channels: int) -> tuple[torch.Tensor, torch.Tensor]:
 
 
 # --------------------------------------------------------------------------- #
-# Modell
+# Model
 # --------------------------------------------------------------------------- #
 
 
 def add_depth_channel(model) -> bool:
-    """Die erste Faltung von 3 auf 4 Eingangskanaele erweitern.
+    """Widen the first convolution from 3 to 4 input channels.
 
-    Der neue Kanal startet mit Nullgewichten. Das Modell verhaelt sich damit im
-    ersten Schritt exakt wie das RGB-Modell und muss sich den Nutzen der Tiefe
-    erst erarbeiten -- initialisiert man ihn stattdessen mit dem Mittel der
-    Farbgewichte, sieht das Netz die Kachelstruktur sofort doppelt und der
-    Vergleich gegen den RGB-Lauf misst diesen Sprung mit.
+    The new channel starts with zero weights. The model therefore behaves exactly
+    like the RGB model at the first step and has to earn the benefit of the depth
+    -- initialising it with the mean of the colour weights instead would make the
+    network see the tile structure twice at once, and the comparison against the
+    RGB run would measure that jump as well.
     """
     import torch.nn as nn
 
@@ -99,22 +97,21 @@ def add_depth_channel(model) -> bool:
 
 
 class GatedDepthEmbed(torch.nn.Module):
-    """Eigene Eingangsfaltung fuer die Tiefe, dazuaddiert ueber ein gelerntes Gewicht.
+    """A separate input convolution for the depth, added via a learned weight.
 
-    Der vierte Eingabekanal mit Nullgewichten ist gemessen wirkungslos geblieben
-    (+0.005, unter der Streuung), obwohl die Tiefe allein 0.514 erreicht -- das
-    Netz *darf* ihn ignorieren, und solange RGB allein traegt, entsteht kein
-    Grund, ihn zu benutzen.
+    Measured, the fourth input channel with zero weights had no effect (+0.005,
+    below the spread), even though the depth alone reaches 0.514 -- the network
+    *may* ignore it, and as long as RGB carries the task alone there is no reason
+    to use it.
 
-    Hier bekommt die Tiefe deshalb eine eigene, aus den RGB-Gewichten kopierte
-    Faltung. Die vortrainierten Filter sind Kanten- und Texturdetektoren, die auf
-    einer Hoehenkarte genauso sinnvoll ansetzen wie auf einem Bild. Das Gewicht
-    `gate` startet bei 0.5: die Tiefe ist von der ersten Iteration an im
-    Tokenbild, und das Netz muss sie aktiv herausdrehen, statt sie nie
-    hereinzulassen.
+    Here the depth therefore gets its own convolution, copied from the RGB
+    weights. The pretrained filters are edge and texture detectors, which apply as
+    sensibly to a height map as to an image. The weight `gate` starts at 0.5: the
+    depth is in the token image from the first iteration on, and the network has
+    to actively turn it down rather than never letting it in.
 
-    Der gelernte Wert ist zugleich das Messergebnis -- bleibt er nahe null, hat
-    das Netz die Tiefe auch dann verworfen, als sie ihm aufgedraengt wurde.
+    The learned value is at the same time the measurement -- if it stays near
+    zero, the network discarded the depth even when it was forced upon it.
     """
 
     def __init__(self, base: torch.nn.Conv2d, start: float) -> None:
@@ -127,7 +124,7 @@ class GatedDepthEmbed(torch.nn.Module):
 
     @property
     def weight(self) -> torch.Tensor:
-        """Der umgebende Code liest hierueber den Datentyp der Eingangsfaltung."""
+        """The surrounding code reads the dtype of the input convolution through this."""
         return self.rgb.weight
 
     def forward(self, pixels: torch.Tensor) -> torch.Tensor:
@@ -139,7 +136,7 @@ class GatedDepthEmbed(torch.nn.Module):
 
 
 def add_gated_depth(model, start: float) -> bool:
-    """Die erste 3-Kanal-Faltung durch die gegatete Variante ersetzen."""
+    """Replace the first 3-channel convolution with the gated variant."""
     import torch.nn as nn
 
     for name, module in model.named_modules():
@@ -153,12 +150,12 @@ def add_gated_depth(model, start: float) -> bool:
 
 def build_model(arch: str, checkpoint: str | None = None, depth: bool = False,
                 fusion: str = "kanal", gate_start: float = 0.5):
-    """Vortrainierten Kopf auf eine Klasse umbauen.
+    """Rebuild a pretrained head for a single class.
 
-    Der COCO-Kopf sagt 80 Klassen vorher, hier gibt es nur `tree`. Die
-    Klassenschicht passt damit nicht und wird neu initialisiert
-    (`ignore_mismatched_sizes`); Backbone, Pixeldecoder und Maskenkopf bleiben
-    vortrainiert -- dort steckt das, was uebertragbar ist.
+    The COCO head predicts 80 classes, here there is only `tree`. The class layer
+    therefore does not fit and is reinitialised (`ignore_mismatched_sizes`);
+    backbone, pixel decoder and mask head stay pretrained -- that is where the
+    transferable knowledge sits.
     """
     from transformers import AutoModelForUniversalSegmentation
 
@@ -183,12 +180,12 @@ def normalize(image_uint8: np.ndarray, size: int) -> torch.Tensor:
 
 
 # --------------------------------------------------------------------------- #
-# Daten
+# Data
 # --------------------------------------------------------------------------- #
 
 
 class QueryCrops(torch.utils.data.Dataset):
-    """Ausschnitte von `CrownCrops` im Format der Universal-Segmentation-Modelle."""
+    """Crops from `CrownCrops` in the format of the universal segmentation models."""
 
     def __init__(self, base: bam.CrownCrops, size: int) -> None:
         self.base, self.size = base, size
@@ -207,7 +204,7 @@ class QueryCrops(torch.utils.data.Dataset):
         if len(masks):
             masks = F.interpolate(masks[None].float(), size=(self.size, self.size),
                                   mode="nearest")[0]
-            keep = masks.flatten(1).sum(1) > 0  # beim Verkleinern verschwundene Kronen
+            keep = masks.flatten(1).sum(1) > 0  # crowns that vanished when downscaling
             masks = masks[keep]
         else:
             masks = torch.zeros((0, self.size, self.size))
@@ -220,19 +217,19 @@ def collate(batch):
 
 
 # --------------------------------------------------------------------------- #
-# Vorhersage
+# Prediction
 # --------------------------------------------------------------------------- #
 
 
 @torch.no_grad()
 def predict_window(model, window_rgb: np.ndarray, device, args) -> list[met.Instance]:
-    """Queries mit Score ueber der Schwelle als Instanzen im Fenstermassstab."""
+    """Queries scoring above the threshold, as instances at window scale."""
     height, width = window_rgb.shape[:2]
     pixels = normalize(window_rgb, args.input_size)[None].to(device)
     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=device.type == "cuda"):
         output = model(pixel_values=pixels)
 
-    # Letzte Klasse ist "kein Objekt"; Klasse 0 ist die Krone.
+    # The last class is "no object"; class 0 is the crown.
     scores = output.class_queries_logits[0].float().softmax(-1)[:, 0]
     keep = scores >= args.score_thresh
     if not keep.any():
@@ -253,7 +250,7 @@ def predict_tiles(model, image_rgb: np.ndarray, device, args) -> list[met.Instan
 
 
 def rescale(instance: met.Instance, factor: float) -> met.Instance | None:
-    """Eine Instanz aus einem skalierten Bild in die Originalkoordinaten holen."""
+    """Bring one instance from a scaled image back into original coordinates."""
     x0, y0, x1, y1 = (int(round(v * factor)) for v in instance.box)
     width, height = max(1, x1 - x0), max(1, y1 - y0)
     mask = cv2.resize(instance.mask.astype(np.uint8), (width, height),
@@ -265,14 +262,13 @@ def rescale(instance: met.Instance, factor: float) -> met.Instance | None:
 
 def predict_multiscale(model, image_bgr: np.ndarray, device, args,
                        scales: list[float]) -> list[met.Instance]:
-    """Dieselbe Aufnahme in mehreren Aufloesungen, Ergebnisse zusammengefuehrt.
+    """The same capture at several resolutions, with the results merged.
 
-    Der Bildmassstab der eigenen Frames ist nur geschaetzt, und ein trainiertes
-    Modell sucht Kronen in der Groesse, die es gelernt hat. Mehrere Massstaebe
-    nebeneinander machen die Vorhersage von dieser Schaetzung unabhaengig -- es
-    ist derselbe Grund, aus dem `segment_sam3.py` ueber mehrere Kachelstufen
-    laeuft. Zusammengefuehrt wird nach Konfidenz, stark ueberlappende Masken aus
-    benachbarten Massstaeben fallen dabei weg.
+    The image scale of our own frames is only estimated, and a trained model looks
+    for crowns at the size it learned. Several scales side by side make the
+    prediction independent of that estimate -- the same reason `segment_sam3.py`
+    runs over several tile levels. Merging is by confidence, and strongly
+    overlapping masks from neighbouring scales drop out in the process.
     """
     height, width = image_bgr.shape[:2]
     collected: list[met.Instance] = []
@@ -285,7 +281,7 @@ def predict_multiscale(model, image_bgr: np.ndarray, device, args,
 
 
 # --------------------------------------------------------------------------- #
-# Modi
+# Modes
 # --------------------------------------------------------------------------- #
 
 
@@ -303,7 +299,7 @@ def depth_dir_for(args, split: str, root: Path | None = None) -> Path | None:
 
 
 def load_image(directory: Path, stem: str, args) -> np.ndarray:
-    """Kachel als RGB oder RGB+Tiefe, je nach Betriebsart."""
+    """A tile as RGB or RGB+depth, depending on the mode."""
     image = cv2.cvtColor(cv2.imread(str(directory / f"{stem}.jpg")), cv2.COLOR_BGR2RGB)
     depth_dir = depth_dir_for(args, directory.name, directory.parent)
     if depth_dir is None:
@@ -313,7 +309,7 @@ def load_image(directory: Path, stem: str, args) -> np.ndarray:
 
 
 def validate_instances(model, args, device) -> float:
-    """Instanz-F1 auf ganzen Validierungskacheln -- die Groesse, nach der ausgewaehlt wird."""
+    """Instance F1 on whole validation tiles -- the quantity selection is made on."""
     model.eval()
     rows = []
     for directory in [root / "val" for root in roots(args)]:
@@ -342,11 +338,11 @@ def run_training(args, device) -> None:
     sources = roots(args)
     loaders = {}
     for split, steps, augment in (("train", args.steps_per_epoch, True), ("val", args.val_steps, False)):
-        # Gleiche Gewichtung je Quelle, nicht nach Kachelzahl. BAMFORESTS hat
-        # 1438 Trainingskacheln, Quebec 543 -- nach Groesse gewichtet kaeme der
-        # Datensatz mit den kleinen Kronen kaum vor, und genau der fehlt.
-        # Die Orthomosaik-Quelle zaehlt mit, sonst liefert der Ladevorgang mehr
-        # Schritte als der Lernratenplan vorsieht.
+        # Equal weight per source, not by tile count. BAMFORESTS has 1438 training
+        # tiles, Quebec 543 -- weighted by size, the dataset with the small crowns
+        # would hardly appear, and that is exactly the one that is missing.
+        # The orthomosaic source counts too, otherwise the loader yields more steps
+        # than the learning-rate schedule plans for.
         n_parts = len(sources) + (1 if args.cog_root and augment else 0)
         per_source = max(1, (steps * args.batch_size) // n_parts)
         parts = [QueryCrops(bam.CrownCrops(
@@ -354,10 +350,10 @@ def run_training(args, device) -> None:
             scale_jitter=tuple(args.scale_jitter) if augment else (1.0, 1.0),
             depth_dir=depth_dir_for(args, split, root), depth_only=args.depth_only), args.input_size)
             for root in sources]
-        # Ausschnitte mit frei gewaehltem Bildfeld direkt aus dem Orthomosaik.
-        # Die vorgeschnittenen Kacheln koennen den Massstab nur bis rund
-        # 5.4 cm/px aufweiten; hier sind bis 8.7 cm/px moeglich, begrenzt durch
-        # die 200 Anfragen des Modells und nicht durch die Daten.
+        # Crops with a freely chosen field of view, straight from the orthomosaic.
+        # The pre-cut tiles can widen the scale only to about 5.4 cm/px; here up to
+        # 8.7 cm/px is possible, limited by the 200 queries of the model and not by
+        # the data.
         if args.cog_root and augment:
             from quebec_cog import CogCrops
 
@@ -378,9 +374,8 @@ def run_training(args, device) -> None:
           f"Ausschnitt {args.crop} px Boden -> {args.input_size} px Eingabe | "
           f"Massstab {args.scale_jitter[0]:.2f}-{args.scale_jitter[1]:.2f}\n", flush=True)
 
-    # Der vortrainierte Backbone braucht eine kleinere Schrittweite als der
-    # neu initialisierte Klassenkopf, sonst wird sein Wissen im ersten Epoch
-    # ueberschrieben.
+    # The pretrained backbone needs a smaller step size than the newly initialised
+    # class head, otherwise its knowledge is overwritten in the first epoch.
     backbone, rest = [], []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
@@ -445,17 +440,17 @@ def load_trained(args, device):
 
 
 def run_fusion(args, device) -> None:
-    """Zwei Modelle nebeneinander laufen lassen und die Instanzen vereinigen.
+    """Run two models side by side and unify their instances.
 
-    RGB und Tiefe haben gemessen komplementaere Profile: auf Hain ist RGB
-    praeziser (0.578 gegen 0.474), die Tiefe findet mehr (Trefferquote 0.562
-    gegen 0.532). Der Versuch, beides frueh zu verbinden -- die Tiefe als vierter
-    Eingabekanal -- brachte nichts, weil der Kanal mit Nullgewichten startet und
-    das Modell ihn schlicht ignorieren kann, solange RGB allein traegt.
+    Measured, RGB and depth have complementary profiles: on Hain RGB is more
+    precise (0.578 against 0.474), while depth finds more (recall 0.562 against
+    0.532). The attempt to combine both early -- depth as a fourth input channel --
+    brought nothing, because the channel starts with zero weights and the model can
+    simply ignore it as long as RGB carries the task alone.
 
-    Hier laufen beide vollstaendig getrennt, und erst die fertigen Instanzen
-    werden nach Konfidenz zusammengefuehrt. Dieselbe Mechanik wie bei Multiskala:
-    stark ueberlappende Masken gelten als Dopplung, der Rest bleibt.
+    Here the two run completely separately, and only the finished instances are
+    merged by confidence. The same mechanism as with multi-scale: strongly
+    overlapping masks count as duplicates, the rest stays.
     """
     import collections
 
@@ -536,17 +531,17 @@ def run_evaluation(args, device) -> None:
     print(table.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
 
 
-# Bodenaufloesung von BAMFORESTS. Fremde Aufnahmen muessen darauf gebracht
-# werden, damit die Kronen in der gelernten Groesse ankommen.
+# Ground sampling of BAMFORESTS. Foreign imagery has to be brought to it so that
+# the crowns arrive at the size that was learned.
 BAM_GSD_CM = 1.70
 
 
 def frame_scale(args, folder: str) -> float:
-    """Massstabsfaktor aus Flughoehe und Bildwinkel.
+    """Scale factor from flight altitude and field of view.
 
-    Ein 1920-px-Frame aus 100 m bei 73.7 Grad hat rund 7.8 cm/px, BAMFORESTS
-    1.70 cm/px -- Faktor 4.6. Ohne diese Korrektur sieht das Modell Kronen von
-    56 px, wo es 258 px gelernt hat, und findet nichts.
+    A 1920 px frame from 100 m at 73.7 degrees has about 7.8 cm/px, BAMFORESTS
+    1.70 cm/px -- a factor of 4.6. Without this correction the model sees crowns of
+    56 px where it learned 258 px, and finds nothing.
     """
     altitude = args.altitudes.get(folder, args.altitude)
     gsd_cm = 100 * altitude * 2 * np.tan(np.radians(args.hfov_deg) / 2) / args.frame_width
@@ -585,17 +580,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--arch", choices=list(ARCHS), default="eomt")
     parser.add_argument("--mode", choices=("train", "eval", "predict", "fuse"), default="train")
     parser.add_argument("--fuse-with", type=Path, default=None,
-                        help="Zweiter Checkpoint (Tiefe) fuer --mode fuse.")
+                        help="Second checkpoint (depth) for --mode fuse.")
     parser.add_argument("--prepared", type=Path, nargs="+", default=[bam.BAMFORESTS / "crownseg"],
-                        help="Ein oder mehrere aufbereitete Datensaetze; mehrere werden gemischt.")
+                        help="One or more prepared datasets; several get mixed.")
     parser.add_argument("--splits-per-source", nargs="*", default=[],
-                        help="Abweichende Splitnamen je Quelle, z.B. test fuer Quebec statt test1.")
+                        help="Differing split names per source, e.g. test for Quebec instead of test1.")
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_queryseg")
     parser.add_argument("--checkpoint", type=Path, default=None)
-    parser.add_argument("--checkpoint-from", default=None, help="Abweichender Startcheckpoint.")
+    parser.add_argument("--checkpoint-from", default=None, help="A different starting checkpoint.")
 
-    parser.add_argument("--crop", type=int, default=1024, help="Bodenausschnitt in Kachelpixeln.")
-    parser.add_argument("--input-size", type=int, default=640, help="Eingabegroesse des Modells.")
+    parser.add_argument("--crop", type=int, default=1024, help="Ground footprint in tile pixels.")
+    parser.add_argument("--input-size", type=int, default=640, help="Input size of the model.")
     parser.add_argument("--scale-jitter", type=float, nargs=2, default=(0.6, 1.8))
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--steps-per-epoch", type=int, default=200)
@@ -606,44 +601,44 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--min-area", type=int, default=400)
     parser.add_argument("--depth", action="store_true",
-                        help="Tiefe als vierten Eingabekanal verwenden.")
+                        help="Use the depth as a fourth input channel.")
     parser.add_argument("--depth-only", action="store_true",
-                        help="Nur die Hoehenkarte, dreifach kopiert -- misst ihren "
-                             "Informationsgehalt ohne Farbe.")
+                        help="The height map only, copied three times -- measures its "
+                             "information content without colour.")
     parser.add_argument("--depth-model", default="depthpro", choices=("depthpro", "dav2"))
     parser.add_argument("--fusion", choices=("kanal", "gate"), default="kanal",
-                        help="kanal: vierter Eingabekanal (gemessen wirkungslos). "
-                             "gate: eigene Faltung fuer die Tiefe mit gelerntem Gewicht.")
+                        help="kanal: fourth input channel (measured to have no effect). "
+                             "gate: a separate convolution for the depth with a learned weight.")
     parser.add_argument("--gate-start", type=float, default=0.5)
 
     parser.add_argument("--splits", nargs="*", default=["test1", "test2"])
     parser.add_argument("--eval-tile", type=int, default=1024)
     parser.add_argument("--overlap", type=int, default=768)
-    parser.add_argument("--eval-tiles", type=int, default=40, help="0 = alle Kacheln.")
+    parser.add_argument("--eval-tiles", type=int, default=40, help="0 = every tile.")
     parser.add_argument("--val-f1-tiles", type=int, default=10)
     parser.add_argument("--score-thresh", type=float, default=0.5)
     parser.add_argument("--iou-thresh", type=float, default=0.5)
 
     parser.add_argument("--frames-dir", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--predict-scale", type=float, default=0.0,
-                        help="Fester Faktor; 0 = aus Flughoehe und Bildwinkel bestimmen.")
+                        help="Fixed factor; 0 = derive it from altitude and field of view.")
     parser.add_argument("--altitude", type=float, default=100.0)
-    parser.add_argument("--altitudes", nargs="*", default=[], help="ORDNER=HOEHE, z.B. pines=35")
+    parser.add_argument("--altitudes", nargs="*", default=[], help="FOLDER=ALTITUDE, e.g. pines=35")
     parser.add_argument("--scales", nargs="*", default=[],
-                        help="ORDNER=FAKTOR, gemessen mit scale_probe.py. Schlaegt --altitudes.")
+                        help="FOLDER=FACTOR, measured with scale_probe.py. Overrides --altitudes.")
     parser.add_argument("--cog-root", type=Path, default=None,
-                        help="Orthomosaik-Wurzel fuer Ausschnitte mit variablem Bildfeld.")
+                        help="Orthomosaic root for crops with a variable field of view.")
     parser.add_argument("--cog-zones", nargs="*", default=["zone1"])
     parser.add_argument("--cog-date", default="2021-09-02")
     parser.add_argument("--cog-gsd", type=float, nargs=2, default=(2.7, 8.7),
-                        help="Massstabsspanne in cm je Eingabepixel.")
+                        help="Scale range in cm per input pixel.")
     parser.add_argument("--cog-max-instances", type=int, default=150,
-                        help="Ausschnitte mit mehr Kronen verwerfen -- das Modell hat 200 Anfragen.")
+                        help="Discard crops with more crowns -- the model has 200 queries.")
     parser.add_argument("--scale-steps", type=float, nargs="*", default=[0.7, 1.0, 1.4],
-                        help="Vielfache des Grundmassstabs, die zusammengefuehrt werden. "
-                             "Ein einzelner Wert schaltet Multiskala ab.")
+                        help="Multiples of the base scale that get merged. A single value "
+                             "turns multi-scale off.")
     parser.add_argument("--merge-iou", type=float, default=0.4,
-                        help="Ab dieser Ueberlappung gilt eine Maske als Dopplung.")
+                        help="From this overlap on, a mask counts as a duplicate.")
     parser.add_argument("--hfov-deg", type=float, default=73.7)
     parser.add_argument("--frame-width", type=int, default=1920)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))

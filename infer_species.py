@@ -1,18 +1,18 @@
-"""Baumarten-Klassifikation auf eigenen Drohnen-Frames mit DINOvTree.
+"""Tree species classification on our own drone frames with DINOvTree.
 
-Zweistufige Pipeline, weil DINOvTree selbst keine Instanzen findet:
+A two-stage pipeline, because DINOvTree finds no instances of its own:
 
-  1. DeepForest (vortrainiert auf NEON, ~10 cm/px) detektiert Kronen-Boxen im Frame.
-  2. Um jede Box wird ein baum-zentrierter Ausschnitt geschnitten, auf 512x512
-     skaliert und von DINOvTree-B (Checkpoint: Quebec Trees) klassifiziert.
+  1. DeepForest (pretrained on NEON, ~10 cm/px) detects crown boxes in the frame.
+  2. A tree-centred crop is cut around every box, scaled to 512x512 and
+     classified by DINOvTree-B (checkpoint: Quebec Trees).
 
-Der Ausschnitt wird so gewaehlt, dass er dieselbe *Bodenflaeche* abdeckt wie im
-Training (512 px * 1.9 cm/px = 9.73 m). Dafuer wird der GSD aus Flughoehe und
-horizontalem Bildwinkel geschaetzt. Alternativ (--crop-mode relative) wird ein
-festes Vielfaches der detektierten Kronenbox verwendet, dann ist keine
-Kamerakenntnis noetig.
+The crop is chosen so that it covers the same *ground area* as in training
+(512 px * 1.9 cm/px = 9.73 m). The GSD for that is estimated from flight
+altitude and horizontal field of view. Alternatively (--crop-mode relative) a
+fixed multiple of the detected crown box is used, which needs no knowledge of
+the camera.
 
-Beispiel:
+Example:
     python infer_species.py --input /cold/Mahfuz/chosen_frames --out results
 """
 
@@ -36,29 +36,29 @@ REPO_ROOT = Path(__file__).resolve().parent
 DINOVTREE_DIR = REPO_ROOT / "third_party" / "DINOvTree"
 sys.path.insert(0, str(DINOVTREE_DIR))
 
-# Trainings-Geometrie des Quebec-Trees-Checkpoints: die Kacheln wurden bei
-# nativer Aufloesung geschnitten, ohne Resampling.
+# Training geometry of the Quebec Trees checkpoint: the tiles were cut at native
+# resolution, without resampling.
 TRAIN_GSD_M = 0.019
 TRAIN_TILE_PX = 512
 TRAIN_FOOTPRINT_M = TRAIN_GSD_M * TRAIN_TILE_PX  # 9.728 m
 
-# Klassen, die im Paper ausgeschlossen wurden (Supercategories = Annotator-Unsicherheit).
+# Classes excluded in the paper (supercategories = annotator uncertainty).
 QUEBEC_TREES_EXCLUDE = (2, 3, 10)
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png", ".tif", ".tiff"}
 
 
 # --------------------------------------------------------------------------- #
-# Klassen-Mapping
+# Class mapping
 # --------------------------------------------------------------------------- #
 
 
 def load_class_names(categories_path: Path, exclude: tuple[int, ...]) -> list[str]:
-    """Rekonstruiert die Logit-Reihenfolge des Checkpoints.
+    """Reconstructs the logit order of the checkpoint.
 
-    Repliziert die Logik aus ``BaseModel._setup_categories`` und
-    ``BaseLabeledRasterCocoDataset._remap_class_ids``: ausgeschlossene IDs raus,
-    Rest nach originaler ID sortiert, 0-basiert durchnummeriert.
+    Replicates the logic of ``BaseModel._setup_categories`` and
+    ``BaseLabeledRasterCocoDataset._remap_class_ids``: drop the excluded ids, sort
+    the rest by original id, renumber from zero.
     """
     with open(categories_path) as f:
         categories = json.load(f)["categories"]
@@ -68,12 +68,12 @@ def load_class_names(categories_path: Path, exclude: tuple[int, ...]) -> list[st
 
 
 # --------------------------------------------------------------------------- #
-# Modell
+# Model
 # --------------------------------------------------------------------------- #
 
 
 def resolve_device(requested: str) -> torch.device:
-    """'auto' -> cuda wenn verfuegbar, sonst cpu."""
+    """'auto' -> cuda if available, otherwise cpu."""
     if requested == "auto":
         return torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return torch.device(requested)
@@ -82,12 +82,12 @@ def resolve_device(requested: str) -> torch.device:
 def build_dinovtree(
     ckpt_path: Path, n_classes: int, max_height: float, device: torch.device | str = "cpu"
 ) -> torch.nn.Module:
-    """Baut das DINOvTree-Kernmodell und laedt den veroeffentlichten Checkpoint.
+    """Builds the DINOvTree core model and loads the published checkpoint.
 
-    Der Checkpoint enthaelt den kompletten feingetunten Backbone, deshalb brauchen
-    wir Metas DINOv3-Gewichte nicht. Das Repo laedt sie aber unbedingt ueber eine
-    URL aus ``dinov3_urls.json``, also wird ``torch.hub.load`` kurz umgebogen, um
-    die Architektur uninitialisiert zu bauen.
+    The checkpoint contains the complete fine-tuned backbone, so we do not need
+    Meta's DINOv3 weights. The upstream repo insists on fetching them from a URL
+    in ``dinov3_urls.json``, so ``torch.hub.load`` is briefly redirected in order
+    to build the architecture uninitialised.
     """
     original_hub_load = torch.hub.load
 
@@ -116,7 +116,7 @@ def build_dinovtree(
 
 
 def build_detector(model_name: str):
-    """Laedt den vortrainierten DeepForest-Kronendetektor."""
+    """Loads the pretrained DeepForest crown detector."""
     from deepforest import main as deepforest_main
 
     detector = deepforest_main.deepforest()
@@ -126,20 +126,20 @@ def build_detector(model_name: str):
 
 
 # --------------------------------------------------------------------------- #
-# Geometrie
+# Geometry
 # --------------------------------------------------------------------------- #
 
 
 def gsd_from_altitude(altitude_m: float, hfov_deg: float, image_width_px: int) -> float:
-    """Bodenaufloesung in m/px aus Flughoehe und horizontalem Bildwinkel (Nadir)."""
+    """Ground sampling in m/px from flight altitude and horizontal FOV (nadir)."""
     ground_width_m = 2.0 * altitude_m * math.tan(math.radians(hfov_deg) / 2.0)
     return ground_width_m / image_width_px
 
 
 def resolve_altitude(folder_name: str, overrides: dict[str, float], fallback: float) -> tuple[float, str]:
-    """Bestimmt die Flughoehe eines Ordners und woher der Wert stammt.
+    """Determines the flight altitude of a folder and where the value came from.
 
-    Reihenfolge: explizite Angabe via --altitudes > Zahl im Ordnernamen > Default.
+    Order: explicit --altitudes > a number in the folder name > the default.
     """
     if folder_name in overrides:
         return overrides[folder_name], "override"
@@ -164,9 +164,9 @@ def parse_altitude_overrides(items: list[str] | None) -> dict[str, float]:
 
 @dataclass
 class CropSpec:
-    """Beschreibt, wie gross der Ausschnitt um eine Detektion sein soll."""
+    """Describes how large the crop around a detection should be."""
 
-    mode: str  # "gsd" oder "relative"
+    mode: str  # "gsd" or "relative"
     gsd_m: float | None
     relative_factor: float
     footprint_m: float = TRAIN_FOOTPRINT_M
@@ -179,11 +179,11 @@ class CropSpec:
 
 
 def crop_centered(image: np.ndarray, cx: float, cy: float, size_px: int) -> np.ndarray:
-    """Schneidet ein quadratisches Fenster um (cx, cy) und spiegelt am Bildrand.
+    """Cuts a square window around (cx, cy), mirroring at the image border.
 
-    Die Trainingskacheln lagen immer vollstaendig im Orthomosaik. Baeume am
-    Frame-Rand haetten hier sonst schwarze Balken, was der Backbone nie gesehen
-    hat -- Spiegelung ist die harmlosere Fortsetzung.
+    The training tiles always lay completely inside the orthomosaic. Trees at the
+    frame border would otherwise get black bars here, which the backbone has
+    never seen -- mirroring is the more harmless continuation.
     """
     half = size_px // 2
     x0, y0 = int(round(cx)) - half, int(round(cy)) - half
@@ -201,14 +201,14 @@ def crop_centered(image: np.ndarray, cx: float, cy: float, size_px: int) -> np.n
 
 
 def to_model_input(patch: np.ndarray) -> np.ndarray:
-    """RGB-Ausschnitt -> (3, 512, 512) float32 in [0, 1], wie im Dataset des Repos."""
+    """RGB crop -> (3, 512, 512) float32 in [0, 1], as in the upstream dataset."""
     interpolation = cv2.INTER_AREA if patch.shape[0] > TRAIN_TILE_PX else cv2.INTER_LINEAR
     resized = cv2.resize(patch, (TRAIN_TILE_PX, TRAIN_TILE_PX), interpolation=interpolation)
     return np.transpose(resized.astype(np.float32) / 255.0, (2, 0, 1))
 
 
 # --------------------------------------------------------------------------- #
-# Inferenz
+# Inference
 # --------------------------------------------------------------------------- #
 
 
@@ -216,7 +216,7 @@ def to_model_input(patch: np.ndarray) -> np.ndarray:
 def classify_crops(
     model: torch.nn.Module, crops: np.ndarray, batch_size: int, device: torch.device | str = "cpu"
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Gibt (Wahrscheinlichkeiten [N, C], Hoehen [N]) zurueck."""
+    """Returns (probabilities [N, C], heights [N])."""
     probabilities, heights = [], []
     for start in range(0, len(crops), batch_size):
         batch = torch.from_numpy(crops[start : start + batch_size]).to(device)
@@ -227,7 +227,7 @@ def classify_crops(
 
 
 def detect(detector, image_rgb: np.ndarray, args) -> pd.DataFrame:
-    """Kronendetektion auf dem ganzen Frame, per Sliding Window."""
+    """Crown detection over the whole frame, via a sliding window."""
     boxes = detector.predict_tile(
         image=image_rgb.astype("float32"),
         patch_size=args.detector_patch_size,
@@ -296,7 +296,7 @@ def process_frame(
 
 
 # --------------------------------------------------------------------------- #
-# Visualisierung
+# Visualisation
 # --------------------------------------------------------------------------- #
 
 
@@ -342,22 +342,22 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--categories", type=Path, default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
 
     parser.add_argument("--crop-mode", choices=("gsd", "relative"), default="gsd",
-                        help="gsd: Ausschnitt deckt 9.73 m ab wie im Training. relative: Vielfaches der Kronenbox.")
+                        help="gsd: the crop covers 9.73 m as in training. relative: a multiple of the crown box.")
     parser.add_argument("--altitude", type=float, default=100.0,
-                        help="Flughoehe in m, wenn weder --altitudes noch der Ordnername etwas hergeben.")
+                        help="Flight altitude in m when neither --altitudes nor the folder name says.")
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE",
-                        help="Flughoehe pro Ordner, z.B. --altitudes pines=35 dense=60")
+                        help="Flight altitude per folder, e.g. --altitudes pines=35 dense=60")
     parser.add_argument("--hfov-deg", type=float, default=73.7,
-                        help="Horizontaler Bildwinkel der Kamera in Grad (DJI 24-mm-aequiv. 16:9 ~ 73.7).")
+                        help="Horizontal field of view of the camera in degrees (DJI 24 mm equiv. 16:9 ~ 73.7).")
     parser.add_argument("--relative-factor", type=float, default=2.5,
-                        help="Ausschnittsgroesse als Vielfaches der Kronenbox (--crop-mode relative).")
+                        help="Crop size as a multiple of the crown box (--crop-mode relative).")
     parser.add_argument("--footprint-m", type=float, default=TRAIN_FOOTPRINT_M,
-                        help="Kantenlaenge des Ausschnitts am Boden in m (Default = Trainingswert 9.73 m).")
+                        help="Edge length of the crop on the ground in m (default = the training value 9.73 m).")
 
-    parser.add_argument("--min-score", type=float, default=0.35, help="DeepForest-Konfidenzschwelle.")
-    parser.add_argument("--min-box-px", type=float, default=25.0, help="Kleinere Kronenboxen verwerfen.")
+    parser.add_argument("--min-score", type=float, default=0.35, help="DeepForest confidence threshold.")
+    parser.add_argument("--min-box-px", type=float, default=25.0, help="Discard smaller crown boxes.")
     parser.add_argument("--max-trees-per-frame", type=int, default=40,
-                        help="Nur die N sichersten Detektionen klassifizieren (CPU-Laufzeit).")
+                        help="Classify only the N most confident detections (CPU runtime).")
     parser.add_argument("--detector-patch-size", type=int, default=400)
     parser.add_argument("--detector-patch-overlap", type=float, default=0.1)
     parser.add_argument("--detector-iou", type=float, default=0.15)
@@ -365,7 +365,7 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
-    parser.add_argument("--threads", type=int, default=0, help="0 = torch-Default.")
+    parser.add_argument("--threads", type=int, default=0, help="0 = the torch default.")
     parser.add_argument("--no-overlays", action="store_true")
     return parser.parse_args()
 

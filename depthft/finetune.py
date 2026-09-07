@@ -1,52 +1,51 @@
-"""Depth Pro auf FORTRESS feinabstimmen -- metrische Tiefe aus Nadiraufnahmen.
+"""Fine-tune Depth Pro on FORTRESS -- metric depth from nadir captures.
 
-Warum ueberhaupt. Depth Pro ist auf Bodenperspektiven trainiert: Strassen,
-Innenraeume, Portraits. Eine Nadiraufnahme aus 80 m kommt darin nicht vor, und
-das sieht man den Ergebnissen an -- die Tiefe stimmt in der Struktur, aber die
-Skala ist verschoben, und Kronen sitzen zu hoch. Genau das ist reparierbar,
-wenn Wahrheit vorliegt: FORTRESS liefert zu jedem Bildpunkt die Hoehe ueber
-Boden.
+Why at all. Depth Pro is trained on ground perspectives: streets, interiors,
+portraits. A nadir capture from 80 m does not occur in that, and it shows in the
+results -- the depth is right in structure, but the scale is shifted and crowns
+sit too high. That is exactly what can be repaired once truth is available:
+FORTRESS supplies the height above ground for every pixel.
 
-**In welchem Raum trainiert wird.** Depth Pro gibt nicht Meter aus, sondern
-kanonische inverse Tiefe. Metrisch wird daraus erst im Nachlauf des Prozessors:
+**Which space training happens in.** Depth Pro does not output metres but
+canonical inverse depth. It only becomes metric in the processor post-processing:
 
-    d = (f_px / Bildbreite) / D_roh  =  k / D_roh
+    d = (f_px / image width) / D_raw  =  k / D_raw
 
-`k` haengt allein am Bildwinkel. Da wir bei unseren Frames die Kamera kennen,
-geben wir `k` vor, statt es vom Bildwinkelkopf schaetzen zu lassen -- der bleibt
-eingefroren und unveraendert im Checkpoint, damit er weiterhin zur Verfuegung
-steht. Die Ausgabe bleibt kanonische inverse Tiefe, der Verlust wird aber nach
-`d = k/D` und `h = H-d` in metrischer Hoehe berechnet. Der Checkpoint bleibt
-mit den normalen Hugging-Face-Klassen ladbar. Fuer korrekte metrische Tiefe muss
-der bekannte Bildwinkel jedoch weiterhin bei der Nachrechnung vorgegeben
-werden; der eingefrorene Bildwinkelkopf ist fuer Nadirbilder unzuverlaessig.
+`k` depends solely on the field of view. Since we know the camera of our frames,
+we supply `k` instead of letting the field-of-view head estimate it -- that head
+stays frozen and unchanged in the checkpoint so that it remains available. The
+output stays canonical inverse depth, but the loss is computed in metric height
+via `d = k/D` and `h = H-d`. The checkpoint remains loadable with the normal
+Hugging Face classes. For correct metric depth, however, the known field of view
+still has to be supplied during the conversion; the frozen field-of-view head is
+unreliable on nadir images.
 
-**Der Verlust** hat zwei Teile. Ein Huber-Verlust misst den metrischen Fehler
-der Hoehe `h = H - k/D` und optimiert damit unmittelbar die Zielgroesse. Eine
-Gradientenanpassung ueber vier Skalen auf derselben Hoehendifferenz schaerft
-Kronengrenzen. Ein frueherer Stand benutzte Log-Tiefe; das waere ein relativer
-Fehler der Kameradistanz `H-h`, nicht der Baumhoehe, und war fuer dieses Ziel
-deshalb falsch gewichtet.
+**The loss** has two parts. A Huber loss measures the metric error of the height
+`h = H - k/D` and thereby optimises the target quantity directly. A gradient
+matching over four scales on the same height difference sharpens crown
+boundaries. An earlier state used log depth; that would be a relative error of
+the camera distance `H-h`, not of the tree height, and was therefore weighted
+wrongly for this goal.
 
-**Warum der Kopf vorher vorgespannt wird.** Pures Depth Pro liegt bei diesem
-Aufnahmefall um Faktor 50 daneben. Wegen `d = k/D` ist die Abbildung nahe null
-sehr steil; ein Optimizer soll diesen grossen Skalenwechsel nicht erst durch
-viele instabile Schritte lernen. Die Vorspannung setzt die Ausgabe vor dem
-ersten Update in den physikalisch relevanten Bereich.
+**Why the head is pre-scaled first.** Pure Depth Pro is off by a factor of 50 in
+this capture situation. Because of `d = k/D` the mapping is very steep near zero;
+an optimizer should not have to learn that large change of scale through many
+unstable steps. The pre-scaling puts the output into the physically relevant
+range before the first update.
 
-Der Ausweg ist, den Sprung gar nicht erst zu verlangen. `--vorspannen auto`
-misst den Skalenfehler auf ein paar Stapeln und skaliert damit die letzte
-Faltung des Kopfes. Weil sie eine 1x1-Faltung vor der abschliessenden ReLU ist
-und der Faktor positiv, ist das exakt aequivalent zu `D -> faktor * D` -- aber
-als echte Gewichtsaenderung. Der ausgelieferte Checkpoint bleibt damit ohne
-Sonderweg brauchbar. Die Lernrate dieser einen Schicht wird mit demselben
-Faktor skaliert, sonst rissen Adam-Schritte in gewohnter Groesse die nun um
-Groessenordnungen kleineren Gewichte sofort auseinander.
+The way out is not to demand the jump in the first place. `--vorspannen auto`
+measures the scale error over a few batches and scales the last convolution of
+the head with it. Because that is a 1x1 convolution before the final ReLU and the
+factor is positive, this is exactly equivalent to `D -> factor * D` -- but as a
+real weight change. The shipped checkpoint therefore stays usable without a
+special case. The learning rate of that one layer is scaled by the same factor,
+otherwise Adam steps of the usual size would immediately tear apart weights that
+are now orders of magnitude smaller.
 
-**Was trainiert wird.** Vorgabe ist `decoder`: Nacken, Fusionsstufe und Kopf,
-rund 60 M Parameter. Der Encoder laeuft eingefroren unter `no_grad` -- das
-spart den Grossteil des Speichers und reicht, denn die Skala sitzt im Kopf,
-nicht in den Merkmalen. `all` stimmt alles mit ab und braucht deutlich mehr GPU.
+**What is trained.** The default is `decoder`: neck, fusion stage and head,
+around 60 M parameters. The encoder runs frozen under `no_grad` -- that saves the
+bulk of the memory and is enough, because the scale sits in the head, not in the
+features. `all` tunes everything and needs considerably more GPU.
 
     python depthft/finetune.py --epochs 8
     python depthft/finetune.py --trainable all --batch 1 --accum 16
@@ -69,12 +68,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dataset import NadirFrames, auf_modell  # noqa: E402
 
 MODELL = "apple/DepthPro-hf"
-MIN_D = 1e-6      # kanonische inverse Tiefe; der Kopf endet auf ReLU, kann also 0 liefern
-TIEFE_MIN_M = 2.0     # Sicherung: darunter haengt die Kamera im Baum,
+MIN_D = 1e-6      # canonical inverse depth; the head ends on a ReLU, so it can return 0
+TIEFE_MIN_M = 2.0     # safeguard: below this the camera hangs inside the tree,
 
 
 def gruppen(model, was: str) -> list[torch.nn.Parameter]:
-    """Welche Teile mitlernen. Der Bildwinkelkopf nie -- wir geben k vor."""
+    """Which parts take part in learning. Never the FOV head -- we supply k."""
     for p in model.parameters():
         p.requires_grad_(False)
     teile = {
@@ -94,7 +93,7 @@ def gruppen(model, was: str) -> list[torch.nn.Parameter]:
 
 
 def vorhersage(model, pixel_values: torch.Tensor, encoder_frozen: bool) -> torch.Tensor:
-    """Kanonische inverse Tiefe. Bei eingefrorenem Encoder ohne Aktivierungsspeicher."""
+    """Canonical inverse depth. With a frozen encoder, without activation memory."""
     if not encoder_frozen:
         return model(pixel_values=pixel_values).predicted_depth
     with torch.no_grad():
@@ -106,12 +105,12 @@ def vorhersage(model, pixel_values: torch.Tensor, encoder_frozen: bool) -> torch
 
 @torch.no_grad()
 def vorspannen(model, lader, args, device, encoder_frozen: bool, stapel: int = 8) -> float:
-    """Den Kopf auf den Aufnahmefall einstellen, bevor ueberhaupt trainiert wird.
+    """Set the head to the capture situation before any training happens.
 
-    Gemessen wird der Skalenfehler `d_vorhergesagt / d_wahr` als Median ueber
-    einige Stapel. Genau dieser Faktor geht in die letzte Faltung des Kopfes:
-    ist die Vorhersage um Faktor 50 zu klein, wird die kanonische inverse Tiefe
-    mit 0.02 skaliert, und die Tiefe stimmt in der Groessenordnung.
+    The scale error `d_predicted / d_true` is measured as the median over a few
+    batches. Exactly that factor goes into the last convolution of the head: if
+    the prediction is a factor of 50 too small, the canonical inverse depth is
+    scaled by 0.02, and the depth is right in order of magnitude.
     """
     trainingsmodus(model, encoder_frozen, False)
     faktoren = []
@@ -137,10 +136,10 @@ def vorspannen(model, lader, args, device, encoder_frozen: bool, stapel: int = 8
 
 
 def kopf_skalieren(model, faktor: float) -> torch.nn.Conv2d:
-    """Letzte 1x1-Faltung des Kopfes skalieren -- aequivalent zu `D -> faktor * D`.
+    """Scale the last 1x1 convolution of the head -- equivalent to `D -> factor * D`.
 
-    Sie sitzt vor der abschliessenden ReLU; ein positiver Faktor kommutiert mit
-    dieser, die Skalierung ist also exakt und nicht bloss ungefaehr.
+    It sits before the final ReLU; a positive factor commutes with it, so the
+    scaling is exact and not merely approximate.
     """
     letzte = [schicht for schicht in model.head.layers if isinstance(schicht, torch.nn.Conv2d)][-1]
     with torch.no_grad():
@@ -151,10 +150,10 @@ def kopf_skalieren(model, faktor: float) -> torch.nn.Conv2d:
 
 
 def gradientenanpassung(rest: torch.Tensor, maske: torch.Tensor, stufen: int = 4) -> torch.Tensor:
-    """Mehrskalige Gradientenanpassung auf einer normierten Fehlerkarte.
+    """Multi-scale gradient matching on a normalised error map.
 
-    Auf jeder Stufe wird der Rest halb so fein betrachtet. Feine Stufen schaerfen
-    Kronengrenzen, grobe verhindern ein langsames Wegdriften ueber das Bild.
+    At each level the residual is viewed half as finely. Fine levels sharpen crown
+    boundaries, coarse ones prevent a slow drift across the image.
     """
     verlust = rest.new_zeros(())
     for stufe in range(stufen):
@@ -171,11 +170,11 @@ def gradientenanpassung(rest: torch.Tensor, maske: torch.Tensor, stufen: int = 4
 
 
 def kennzahlen(d_pred: torch.Tensor, d_gt: torch.Tensor, maske: torch.Tensor) -> dict[str, float]:
-    """Metrische Guete in Metern.
+    """Metric quality, in metres.
 
-    `mae_m` ist zugleich der Fehler der Hoehe ueber Boden: die ist Flughoehe
-    minus Tiefe, und die Flughoehe kuerzt sich in der Differenz heraus. Also
-    genau die Zahl, um die es bei der Baumhoehe geht.
+    `mae_m` is at the same time the error of the height above ground: that is
+    flight altitude minus depth, and the altitude cancels out in the difference.
+    So exactly the number that matters for tree height.
     """
     if maske.sum() == 0:
         return {}
@@ -192,7 +191,7 @@ def kennzahlen(d_pred: torch.Tensor, d_gt: torch.Tensor, maske: torch.Tensor) ->
 
 
 def durchlauf(model, batch, args, device, encoder_frozen: bool):
-    """Ein Vorwaertsschritt: Verlust und Kennzahlen."""
+    """One forward step: loss and metrics."""
     bild = batch["bild"].to(device, non_blocking=True)
     d_gt = batch["tiefe"].to(device, non_blocking=True)
     maske = batch["maske"].to(device, non_blocking=True)
@@ -207,11 +206,11 @@ def durchlauf(model, batch, args, device, encoder_frozen: bool):
         D = F.interpolate(D.unsqueeze(1), size=d_gt.shape[-2:], mode="bilinear",
                           align_corners=False).squeeze(1)
 
-    # Vorwaerts den exakten metrischen Hoehenfehler benutzen. Rueckwaerts ist
-    # die Ableitung von k/D nahe D=0 singulaer; deshalb bekommt der Fehler den
-    # am Ziel D_gt linearisierten Jacobian d_gt**2/k. Der Forward-Wert und damit
-    # der optimierte Huber-Loss bleiben exakt, der Gradient ist jedoch endlich
-    # und zeigt auch bei groben Fehlern in die richtige Richtung.
+    # Use the exact metric height error in the forward pass. Backwards, the
+    # derivative of k/D is singular near D=0; so the error gets the Jacobian
+    # d_gt**2/k linearised at the target D_gt. The forward value, and hence the
+    # optimised Huber loss, stays exact, while the gradient is finite and points
+    # in the right direction even for large errors.
     D_roh = D.clamp_min(MIN_D)
     d_pred = k / D_roh
     D_gt = k / d_gt.clamp_min(TIEFE_MIN_M)
@@ -219,9 +218,9 @@ def durchlauf(model, batch, args, device, encoder_frozen: bool):
     rest_linear = (D - D_gt) * (d_gt.square() / k.clamp_min(MIN_D))
     rest_m = rest_linear + (rest_exakt - rest_linear).detach()
 
-    # h_pred - h_gt = (H-d_pred) - (H-d_gt) = d_gt-d_pred. H kuerzt sich
-    # algebraisch, der Fehler ist aber in Metern und nicht relativ zur grossen
-    # Kameradistanz gewichtet.
+    # h_pred - h_gt = (H-d_pred) - (H-d_gt) = d_gt-d_pred. H cancels
+    # algebraically, but the error is in metres and not weighted relative to the
+    # large camera distance.
     n = maske.sum().clamp_min(1)
     huber = (F.smooth_l1_loss(rest_m, torch.zeros_like(rest_m),
                              reduction="none", beta=args.huber_beta) * maske).sum()
@@ -235,29 +234,28 @@ def lade_modell(quelle: str, device, args):
     from transformers import DepthProForDepthEstimation
     model = DepthProForDepthEstimation.from_pretrained(quelle, dtype=torch.float32).to(device)
     if args.grad_checkpointing and args.trainable == "all":
-        # Nur dann sinnvoll: bei eingefrorenem Encoder faellt der grosse
-        # Aktivierungsspeicher ohnehin nicht an.
+        # Only sensible then: with a frozen encoder the large activation memory
+        # does not arise anyway.
         try:
             model.gradient_checkpointing_enable()
-        except Exception as fehler:      # nicht jede Version kann das
+        except Exception as fehler:      # not every version supports this
             print(f"Gradient-Checkpointing nicht verfuegbar: {fehler}", flush=True)
     return model
 
 
 def trainingsmodus(model, encoder_frozen: bool, an: bool) -> None:
-    """Ein eingefrorener Encoder bleibt auch im Training in `eval`."""
+    """A frozen encoder stays in `eval` even during training."""
     model.train(an)
     if encoder_frozen:
         model.depth_pro.encoder.eval()
 
 
 def bauen_loader(args, split: str, augment: bool, pro_gebiet: int, seed: int):
-    """Zum Validieren feste Ausschnitte, aber in der Schaerfe der Zielframes.
+    """Fixed crops for validation, but at the sharpness of the target frames.
 
-    Die Ausschnitte stehen fest (kein Spiegeln, fester Wurf), damit Epochen
-    vergleichbar bleiben. Weichgezeichnet wird trotzdem: sonst misst die
-    Validierung gestochen scharfe Orthoausschnitte, waehrend Training und
-    Anwendung mit Videobildern zu tun haben.
+    The crops are fixed (no mirroring, a fixed draw) so that epochs stay
+    comparable. Blur is applied nonetheless: otherwise the validation measures
+    razor-sharp ortho crops while training and inference deal with video images.
     """
     daten = NadirFrames(
         args.data, split, crop_px=args.crop_px, seitenverhaeltnis=args.seitenverhaeltnis,
@@ -269,8 +267,8 @@ def bauen_loader(args, split: str, augment: bool, pro_gebiet: int, seed: int):
         strahl_tiefe=args.strahl_tiefe, cache=args.cache_sites, seed=seed,
         site_block=args.site_block,
     )
-    # shuffle=False mit Absicht: NadirFrames mischt reproduzierbar in kurzen
-    # Gebietsblocks. Ein zweites Mischen hier wuerde den Rastercache zerstoeren.
+    # shuffle=False on purpose: NadirFrames shuffles reproducibly in short site
+    # blocks. A second shuffle here would destroy the raster cache.
     lader = torch.utils.data.DataLoader(
         daten, batch_size=args.batch, shuffle=False, num_workers=args.workers,
         pin_memory=True, drop_last=augment, persistent_workers=args.workers > 0,
@@ -296,7 +294,7 @@ def bewerten(model, lader, args, device, encoder_frozen: bool) -> dict[str, floa
 
 
 def start_epoche_bekannt(args) -> bool:
-    """Beim Fortsetzen ist der Kopf schon vorgespannt -- nicht ein zweites Mal."""
+    """On resume the head is already pre-scaled -- do not do it a second time."""
     pfad = args.out / "verlauf.json"
     return pfad.exists() and bool(json.loads(pfad.read_text()))
 
@@ -305,57 +303,57 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--data", type=Path, default=Path("/scratch/shared/nik/data/fortress/depthft"))
     parser.add_argument("--out", type=Path, default=Path("/scratch/shared/nik/runs/depthft_huber_v2"))
-    parser.add_argument("--start", default=MODELL, help="Ausgangsgewichte oder ein eigener Checkpoint.")
+    parser.add_argument("--start", default=MODELL, help="Starting weights, or a checkpoint of your own.")
     parser.add_argument("--trainable", default="decoder", choices=("head", "decoder", "all"))
     parser.add_argument("--epochs", type=int, default=8)
     parser.add_argument("--batch", type=int, default=2)
-    parser.add_argument("--accum", type=int, default=8, help="Schritte bis zur Gewichtsaktualisierung.")
+    parser.add_argument("--accum", type=int, default=8, help="Steps until the weights are updated.")
     parser.add_argument("--lr", type=float, default=2e-5)
-    parser.add_argument("--lr-encoder", type=float, default=1e-5, help="Nur bei --trainable all.")
+    parser.add_argument("--lr-encoder", type=float, default=1e-5, help="Only with --trainable all.")
     parser.add_argument("--vorspannen", default="auto",
-                        help="'auto' misst den Skalenfehler und stellt den Kopf darauf ein, "
-                             "eine Zahl setzt den Faktor fest, 'aus' laesst den Kopf wie er ist.")
+                        help="'auto' measures the scale error and sets the head to it, "
+                             "a number fixes the factor, 'aus' leaves the head as it is.")
     parser.add_argument("--vorspann-stapel", type=int, default=12)
     parser.add_argument("--weight-decay", type=float, default=0.01)
-    parser.add_argument("--warmup", type=float, default=0.05, help="Anteil der Schritte zum Aufwaermen.")
+    parser.add_argument("--warmup", type=float, default=0.05, help="Share of the steps used for warm-up.")
     parser.add_argument("--clip", type=float, default=1.0)
     parser.add_argument("--lambda-grad", type=float, default=0.5)
     parser.add_argument("--grad-stufen", type=int, default=4)
     parser.add_argument("--bezugshoehe", type=float, default=20.0,
-                        help="Normierung des metrischen Hoehen-Losses in Metern.")
+                        help="Normalisation of the metric height loss, in metres.")
     parser.add_argument("--huber-beta", type=float, default=2.0,
-                        help="Breite des quadratischen Huber-Bereichs in Metern.")
+                        help="Width of the quadratic Huber region, in metres.")
     parser.add_argument("--grad-checkpointing", action="store_true")
     parser.add_argument("--crop-px", type=int, default=1536,
-                        help="Bildbreite der Ausschnitte -- zugleich die Aufloesung, in der "
-                             "Verlust und Wahrheit leben. 1536 heisst: kein Umskalieren "
-                             "zwischen Ausschnitt und Modelleingang.")
+                        help="Image width of the crops -- also the resolution in which loss "
+                             "and truth live. 1536 means: no rescaling between crop and "
+                             "model input.")
     parser.add_argument("--seitenverhaeltnis", type=float, default=16 / 9,
-                        help="Breite durch Hoehe der Ausschnitte. Vorgabe ist das unserer Frames.")
-    parser.add_argument("--model-size", type=int, default=1536, help="Eingangsgroesse von Depth Pro.")
-    parser.add_argument("--pro-gebiet", type=int, default=200, help="Ausschnitte je Gebiet und Epoche.")
+                        help="Width over height of the crops. Defaults to that of our frames.")
+    parser.add_argument("--model-size", type=int, default=1536, help="Input size of Depth Pro.")
+    parser.add_argument("--pro-gebiet", type=int, default=200, help="Crops per site and epoch.")
     parser.add_argument("--pro-gebiet-val", type=int, default=40)
     parser.add_argument("--val-scharf", dest="val_domaene", action="store_false", default=True,
-                        help="Validierung auf ungefilterten Orthoausschnitten statt in der "
-                             "Schaerfe der Zielframes. Misst dann eine Verteilung, die im "
-                             "Einsatz nicht vorkommt.")
+                        help="Validate on unfiltered ortho crops instead of at the sharpness "
+                             "of the target frames. That measures a distribution which does "
+                             "not occur in deployment.")
     parser.add_argument("--hoehe-min", type=float, default=25.0)
     parser.add_argument("--hoehe-max", type=float, default=120.0)
     parser.add_argument("--abstand-min", type=float, default=20.0,
-                        help="Mindestabstand der Kamera ueber dem hoechsten Wipfel des Gebietes.")
+                        help="Minimum clearance of the camera above the tallest treetop of the site.")
     parser.add_argument("--fov-min", type=float, default=35.0)
     parser.add_argument("--fov-max", type=float, default=85.0)
     parser.add_argument("--min-gueltig", type=float, default=0.80)
     parser.add_argument("--jitter", type=float, default=1.0)
     parser.add_argument("--video", type=float, default=1.0)
     parser.add_argument("--strahl-tiefe", action="store_true",
-                        help="Tiefe entlang des Sehstrahls statt entlang der optischen Achse.")
-    parser.add_argument("--melden", type=int, default=50, help="Zwischenstand alle N Batches.")
+                        help="Depth along the viewing ray instead of along the optical axis.")
+    parser.add_argument("--melden", type=int, default=50, help="Progress report every N batches.")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--cache-sites", type=int, default=4,
-                        help="Rastercache je Worker und Zahl gemeinsam gemischter Gebiete.")
+                        help="Raster cache per worker, and number of sites shuffled together.")
     parser.add_argument("--site-block", type=int, default=32,
-                        help="Maximal aufeinanderfolgende Samples desselben Gebiets.")
+                        help="Maximum consecutive samples from the same site.")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
@@ -379,9 +377,9 @@ def main() -> None:
     model = lade_modell(quelle, device, args)
     params = gruppen(model, args.trainable)
     encoder_frozen = args.trainable != "all"
-    # Der Bildwinkelkopf wird im Training nicht gerechnet -- er ist eingefroren
-    # und kostet einen zweiten Encoderdurchlauf. Die Gewichte bleiben erhalten
-    # und werden beim Ablegen wieder mitgeschrieben.
+    # The field-of-view head is not computed during training -- it is frozen and
+    # costs a second encoder pass. Its weights are preserved and written back out
+    # when saving.
     model.use_fov_model = False
     trainingsmodus(model, encoder_frozen, True)
 
@@ -393,15 +391,15 @@ def main() -> None:
     train_daten, train_lader = bauen_loader(args, "train", True, args.pro_gebiet, args.seed)
     val_daten, val_lader = bauen_loader(args, "val", False, args.pro_gebiet_val, 12345)
 
-    # Den Kopf auf den Aufnahmefall einstellen, bevor der Optimierer gebaut wird
-    # -- die skalierte Schicht braucht eine eigene, mitskalierte Lernrate.
+    # Set the head to the capture situation before the optimizer is built -- the
+    # scaled layer needs its own, co-scaled learning rate.
     vorgespannt, kopf_schicht = 1.0, None
     fortsetzung = args.resume and start_epoche_bekannt(args)
     if fortsetzung:
         beschreibung = bestes / "depthft.json"
         if beschreibung.exists():
             vorgespannt = float(json.loads(beschreibung.read_text()).get("vorgespannt", 1.0))
-            kopf_schicht = kopf_skalieren(model, 1.0)   # nur greifen, nicht skalieren
+            kopf_schicht = kopf_skalieren(model, 1.0)   # only fetch it, do not scale
             print(f"Fortgesetzt; Kopf war mit {vorgespannt:.4f} vorgespannt.", flush=True)
     elif args.vorspannen != "aus":
         if args.vorspannen == "auto":
@@ -455,8 +453,8 @@ def main() -> None:
     bester_wert = min((e["val"]["mae_m"] for e in verlauf if e.get("val")), default=float("inf"))
     start_epoche = len(verlauf)
 
-    # Beim Fortsetzen muessen Momente und Lernrate mit: sonst faengt der Plan
-    # wieder beim Aufwaermen an und AdamW ohne Momente reisst die Gewichte an.
+    # On resume the moments and the learning rate have to come along: otherwise
+    # the schedule restarts at warm-up and AdamW without moments jolts the weights.
     zustand = args.out / "optimierer.pt"
     if start_epoche and zustand.exists():
         optimizer.load_state_dict(torch.load(zustand, map_location=device, weights_only=False))
@@ -494,7 +492,7 @@ def main() -> None:
                       f"MAE {mittel.get('mae_m', 0):.2f} m | lr {plan.get_last_lr()[0]:.2e}", flush=True)
 
         train_mittel = {n: w / max(1, gesehen) for n, w in laufend.items()}
-        val_daten.set_epoch(0)      # feste Ausschnitte, damit Epochen vergleichbar sind
+        val_daten.set_epoch(0)      # fixed crops, so that epochs stay comparable
         val_mittel = bewerten(model, val_lader, args, device, encoder_frozen)
         print(f"Epoche {epoche} in {(time.time()-t0)/60:.1f} min | "
               f"train AbsRel {train_mittel.get('absrel', 0):.3f} | "
@@ -504,7 +502,7 @@ def main() -> None:
         verlauf.append({"epoche": epoche, "train": train_mittel, "val": val_mittel})
         verlauf_pfad.write_text(json.dumps(verlauf, indent=2))
 
-        model.use_fov_model = model.fov_model is not None   # vollstaendig ablegen
+        model.use_fov_model = model.fov_model is not None   # save it complete
         model.save_pretrained(letztes)
         torch.save(optimizer.state_dict(), args.out / "optimierer.pt")
         if val_mittel.get("mae_m", float("inf")) < bester_wert:

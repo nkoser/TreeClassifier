@@ -1,24 +1,23 @@
-"""Baumart je Kroneninstanz -- Stufe 2 auf den Instanzen aus `crownseg`.
+"""Tree species per crown instance -- stage 2 on the instances from `crownseg`.
 
-`infer_species.py` bekam seine Instanzen bisher von DeepForest. Gemessen auf
-BAMFORESTS liegt dessen Nachfolger, das trainierte EoMT, deutlich darueber, und
-vor allem liefert es Masken statt Boxen. Das aendert zwei Dinge:
+`infer_species.py` used to get its instances from DeepForest. Measured on
+BAMFORESTS its successor, the trained EoMT, is far ahead of it, and above all it
+delivers masks instead of boxes. That changes two things:
 
-  Mittelpunkt   Der Schwerpunkt der Maske trifft den Baum besser als die Mitte
-                einer Box -- bei einer schraeg gewachsenen oder halb verdeckten
-                Krone liegt die Boxmitte oft daneben.
-  Auswahl       Instanzen mit Konfidenz und Form; Bruchstuecke lassen sich vorher
-                aussortieren, statt sie dem Klassifikator zu geben.
+  centre        The centroid of the mask hits the tree better than the centre of
+                a box -- for a leaning or half-occluded crown the box centre
+                often lands beside it.
+  selection     Instances come with a confidence and a shape; fragments can be
+                sorted out beforehand instead of handed to the classifier.
 
-Der Ausschnitt folgt weiter dem Training des Checkpoints: DINOvTree-B hat
-ausschliesslich Ausschnitte von 9.73 m Kantenlaenge gesehen (512 px bei
-1.9 cm/px, ohne Resampling). Der Bildmassstab muss dafuer bekannt sein -- hier
-kommt er aus der Messung je Ordner (`scale_probe.py`), nicht aus einer
-angenommenen Flughoehe.
+The crop still follows the training of the checkpoint: DINOvTree-B has only ever
+seen crops of 9.73 m edge length (512 px at 1.9 cm/px, without resampling). The
+image scale has to be known for that -- here it comes from the per-folder
+measurement (`scale_probe.py`), not from an assumed flight altitude.
 
-**Zur Einordnung der Ergebnisse:** der Checkpoint kennt 14 Klassen aus Quebec.
-Fuer mitteleuropaeische Bestaende ist das auf Gattungsebene brauchbar, auf
-Artebene nicht -- eine Rotbuche gibt es in diesem Label-Satz nicht.
+**How to read the results:** the checkpoint knows 14 classes from Quebec. For
+Central European stands that is usable at genus level, not at species level --
+European beech does not exist in this label set.
 
     python crownseg/classify.py --labels results_frames_eomt_v2 --scales pines=1.2
 """
@@ -57,7 +56,7 @@ def instances_from_labels(labels: np.ndarray, min_area: int) -> list[dict]:
         ys, xs = np.nonzero(mask)
         out.append({
             "instanz": int(value),
-            "cx": float(xs.mean()), "cy": float(ys.mean()),   # Schwerpunkt, nicht Boxmitte
+            "cx": float(xs.mean()), "cy": float(ys.mean()),   # centroid, not box centre
             "x0": int(xs.min()), "y0": int(ys.min()),
             "x1": int(xs.max()) + 1, "y1": int(ys.max()) + 1,
             "flaeche_px": area,
@@ -82,7 +81,7 @@ def draw(image_bgr: np.ndarray, labels: np.ndarray, frame: pd.DataFrame,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--labels", type=Path, required=True, help="Ordner mit <ordner>/<stem>_labels.png")
+    parser.add_argument("--labels", type=Path, required=True, help="Folder with <folder>/<stem>_labels.png")
     parser.add_argument("--images", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_arten_crownseg")
     parser.add_argument("--ckpt", type=Path,
@@ -90,14 +89,14 @@ def main() -> None:
     parser.add_argument("--categories", type=Path,
                         default=REPO_ROOT / "third_party" / "quebec_trees_categories.json")
     parser.add_argument("--scales", nargs="*", default=[],
-                        help="ORDNER=FAKTOR aus scale_probe.py; GSD = Faktor x 1.70 cm.")
-    parser.add_argument("--gsd-cm", type=float, default=None, help="Fester GSD statt --scales.")
+                        help="FOLDER=FACTOR from scale_probe.py; GSD = factor x 1.70 cm.")
+    parser.add_argument("--gsd-cm", type=float, default=None, help="Fixed GSD instead of --scales.")
     parser.add_argument("--footprint-factor", type=float, default=2.4,
-                        help="Ausschnitt als Vielfaches des Kronendurchmessers. Auf Quebec "
-                             "gemessenes Optimum (86.2 %% gegen 79.8 %% bei Faktor 5).")
+                        help="Crop as a multiple of the crown diameter. The optimum measured "
+                             "on Quebec (86.2 %% against 79.8 %% at factor 5).")
     parser.add_argument("--footprint-m", type=float, default=None,
-                        help="Fester Ausschnitt statt --footprint-factor; 9.73 m entspricht "
-                             "dem Training, passt aber nur zu Kronen um 4 m.")
+                        help="Fixed crop instead of --footprint-factor; 9.73 m matches the "
+                             "training but only suits crowns of about 4 m.")
     parser.add_argument("--min-area", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
@@ -128,11 +127,10 @@ def main() -> None:
         if not instances:
             continue
 
-        # Ausschnitt je Krone aus ihrem eigenen Durchmesser. Ein fester
-        # Ausschnitt zeigt bei kleinen Kronen ueberwiegend Nachbarbaeume: auf
-        # Quebec faellt die Genauigkeit von 86.2 % (Krone fuellt 17 % der
-        # Flaeche) auf 69.2 % (1.6 %). Zu eng ist ebenfalls schlechter --
-        # etwas Umgebung traegt bei.
+        # The crop per crown comes from its own diameter. A fixed crop shows
+        # mostly neighbouring trees for small crowns: on Quebec the accuracy falls
+        # from 86.2 % (crown fills 17 % of the area) to 69.2 % (1.6 %). Too tight
+        # is worse as well -- a bit of surroundings contributes.
         rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         crops = []
         for i in instances:

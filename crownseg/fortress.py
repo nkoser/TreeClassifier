@@ -1,24 +1,23 @@
-"""FORTRESS: Kronen segmentieren und aus den Artpolygonen beschriften.
+"""FORTRESS: segment crowns and label them from the species polygons.
 
-FORTRESS (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) liefert 47 UAV-Gebiete im
-Suedschwarzwald zu je 1.7 ha bei 0.77 bis 1.57 cm Bodenaufloesung, dazu 9553
-Artpolygone und ein normalisiertes Hoehenmodell. Die Arten sind die, die dem
-Quebec-Checkpoint fehlen:
+FORTRESS (Schiefer, Frey & Kattenborn 2022, CC BY 4.0) supplies 47 UAV sites in
+the southern Black Forest, 1.7 ha each at 0.77 to 1.57 cm ground sampling, plus
+9553 species polygons and a normalised height model. The species are the ones
+the Quebec checkpoint lacks:
 
     Picea abies 3560 | Fagus sylvatica 1824 | Abies alba 1191
     Pinus sylvestris 685 | Acer pseudoplatanus 244 | Pseudotsuga menziesii 221
     Fraxinus excelsior 175 | Larix decidua 161 | Quercus 72 | Betula pendula 53
-    dazu forest floor 776 und deadwood 389 als Nicht-Baum-Klassen
+    plus forest floor 776 and deadwood 389 as non-tree classes
 
-Die Polygone sind aber **semantisch**: sie sagen, welche Art an einer Stelle
-steht, nicht welcher Baum. Einzelne Baeume kommen aus unserer Segmentierung, die
-Art aus der Verschneidung -- gemessen auf Quebec liefert das bei vorhergesagten
-Kronen 71 % brauchbare Ausschnitte mit nahezu fehlerfreier Artzuordnung.
+The polygons are **semantic**, though: they say which species stands at a place,
+not which tree. Individual trees come from our segmentation, the species from
+the intersection -- measured on Quebec that yields 71 % usable crops with a
+nearly error-free species assignment on predicted crowns.
 
-Der Massstab wird je Gebiet angeglichen: das Segmentierungsmodell hat auf
-BAMFORESTS bei 1.70 cm/px gelernt, FORTRESS liegt darunter. Ohne Angleichung
-saehe es Kronen in falscher Groesse -- der Fehler, der sich durch dieses Projekt
-zieht.
+The scale is matched per site: the segmentation model learned on BAMFORESTS at
+1.70 cm/px, and FORTRESS is below that. Without matching it would see crowns at
+the wrong size -- the error that runs through this whole project.
 
     python crownseg/fortress.py --sites CFB014 CFB019 --out .../fortress_kronen
 """
@@ -56,12 +55,11 @@ NICHT_BAUM = {"forest floor", "deadwood", "other"}
 
 @torch.no_grad()
 def sam3_instanzen(model, processor, patch: np.ndarray, args, device) -> list[met.Instance]:
-    """Kronen einer Kachel mit SAM 3 ueber mehrere Kachelstufen.
+    """Crowns of one tile with SAM 3 over several tile levels.
 
-    Dieselbe Kette wie in `segment_sam3.py`: jede Stufe bestimmt, wie gross eine
-    Krone dem Modell erscheint, angeschnittene Instanzen fallen raus (die
-    Nachbarkachel enthaelt dasselbe Objekt vollstaendig), danach gierig nach
-    Score zusammenfuehren.
+    The same chain as in `segment_sam3.py`: each level fixes how large a crown
+    appears to the model, cut instances are dropped (the neighbouring tile
+    contains the same object completely), then merge greedily by score.
     """
     hoehe, breite = patch.shape[:2]
     kandidaten = []
@@ -94,7 +92,7 @@ def sam3_instanzen(model, processor, patch: np.ndarray, args, device) -> list[me
 
 
 def read_shp(path: Path):
-    """Polygonringe eines Shapefiles in Weltkoordinaten."""
+    """Polygon rings of a shapefile, in world coordinates."""
     b = path.read_bytes()
     offset = 100
     while offset < len(b):
@@ -135,11 +133,11 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("/scratch/shared/nik/data/fortress/kronen"))
     parser.add_argument("--checkpoint", type=Path,
                         default=Path("/scratch/shared/nik/data/treeclf/checkpoints/crownseg_eomt.pth"))
-    parser.add_argument("--sites", nargs="*", default=None, help="Vorgabe: alle.")
-    parser.add_argument("--tile", type=int, default=2048, help="Kachel im Massstab von BAMFORESTS.")
+    parser.add_argument("--sites", nargs="*", default=None, help="Default: all of them.")
+    parser.add_argument("--tile", type=int, default=2048, help="Tile at the BAMFORESTS scale.")
     parser.add_argument("--overlap", type=int, default=512)
     parser.add_argument("--footprint-factor", type=float, default=2.4)
-    parser.add_argument("--crop-px", type=int, default=224, help="Kantenlaenge der abgelegten Ausschnitte.")
+    parser.add_argument("--crop-px", type=int, default=224, help="Edge length of the stored crops.")
     parser.add_argument("--min-coverage", type=float, default=0.5)
     parser.add_argument("--min-purity", type=float, default=0.7)
     parser.add_argument("--min-area", type=int, default=400)
@@ -148,15 +146,15 @@ def main() -> None:
     parser.add_argument("--eval-overlap", type=int, default=768)
     parser.add_argument("--input-size", type=int, default=640)
     parser.add_argument("--segmenter", default="eomt", choices=("eomt", "sam3"),
-                        help="Woher die Kroneninstanzen kommen, in die beschriftet wird.")
+                        help="Where the crown instances being labelled come from.")
     parser.add_argument("--prompt", default="tree")
     parser.add_argument("--sam3-tiles", type=int, nargs="*", default=[2, 3, 4],
-                        help="Kachelstufen je Kachel -- wie beim Lauf auf den eigenen Frames.")
+                        help="Tile levels per tile -- as in the run on our own frames.")
     parser.add_argument("--sam3-threshold", type=float, default=0.15)
     parser.add_argument("--tile-overlap", type=float, default=0.15)
     parser.add_argument("--max-overlap", type=float, default=0.30)
     parser.add_argument("--crown-px", type=float, default=275.0,
-                        help="Erwarteter Kronendurchmesser bei 1.70 cm/px; steuert den Groessenfilter.")
+                        help="Expected crown diameter at 1.70 cm/px; drives the size filter.")
     parser.add_argument("--min-area-factor", type=float, default=0.12)
     parser.add_argument("--max-area-factor", type=float, default=5.0)
     parser.add_argument("--min-compactness", type=float, default=0.25)
@@ -183,7 +181,7 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     (args.out / "crops").mkdir(exist_ok=True)
 
-    # Einheitliche Klassennummern ueber alle Gebiete.
+    # Uniform class numbers across all sites.
     alle_arten = sorted({a for s in sites if (shapes / f"poly_{s}.dbf").exists()
                          for a in read_dbf(shapes / f"poly_{s}.dbf")})
     zu_id = {a: i + 1 for i, a in enumerate(alle_arten)}
@@ -203,7 +201,7 @@ def main() -> None:
         with rasterio.open(ortho) as src:
             gsd = abs(src.transform.a)
             inverse = ~src.transform
-            # Auf den Massstab bringen, in dem das Modell gelernt hat.
+            # Bring it to the scale the model learned on.
             faktor = gsd / BAM_GSD_M
             in_pixeln = []
             for teile, art in zip(ringe, arten):
@@ -211,7 +209,7 @@ def main() -> None:
                     cols, rows = inverse * (ring[:, 0], ring[:, 1])
                     in_pixeln.append((np.stack([cols, rows], 1).astype(np.float32), zu_id[art]))
 
-            quelle = int(round(args.tile / faktor))   # Fenster im Originalbild
+            quelle = int(round(args.tile / faktor))   # window in the original image
             schritt = int(round((args.tile - args.overlap) / faktor))
             behalten = 0
             for y0 in range(0, max(1, src.height - quelle), schritt):

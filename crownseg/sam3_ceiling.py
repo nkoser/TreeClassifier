@@ -1,19 +1,18 @@
-"""Was koennte ein feingetuntes SAM 3 hoechstens erreichen?
+"""What could a fine-tuned SAM 3 achieve at best?
 
-SAM 3 mit Textprompt kommt auf Hain auf F1 0.312, das trainierte EoMT auf 0.554.
-Der Unterschied liegt nicht an der Randqualitaet -- die ist bei SAM 3 mit einer
-mittleren IoU von 0.780 die beste im Feld --, sondern daran, *welche* Objekte es
-fuer Kronen haelt. Genau das wuerde ein Feintuning korrigieren.
+SAM 3 with a text prompt reaches F1 0.312 on Hain, the trained EoMT 0.554. The
+difference is not boundary quality -- with a mean IoU of 0.780, SAM 3 has the
+best in the field -- but *which* objects it takes for crowns. That is exactly
+what fine-tuning would correct.
 
-Ob sich das lohnt, haengt an einer Frage, die sich ohne jedes Training
-beantworten laesst: **sind die richtigen Kronen unter SAM 3s Rohvorschlaegen
-ueberhaupt enthalten?** Ein Feintuning kann die Auswahl verbessern, aber keine
-Maske erfinden, die nie vorgeschlagen wurde.
+Whether it is worth it hangs on a question that can be answered without any
+training: **are the right crowns contained in SAM 3 raw proposals at all?**
+Fine-tuning can improve the selection, but it cannot invent a mask that was
+never proposed.
 
-Gemessen wird deshalb die Obergrenze: fuer jede echte Krone geprueft, ob
-irgendeine der ungefilterten SAM-3-Masken sie bei IoU >= 0.5 trifft. Das ist die
-Trefferquote, die ein perfekter Auswaehler auf diesen Vorschlaegen erreichen
-wuerde -- mehr geht mit Feintuning nicht.
+So the ceiling is measured: for every true crown, whether any of the unfiltered
+SAM 3 masks hits it at IoU >= 0.5. That is the recall a perfect selector on
+these proposals would reach -- fine-tuning cannot go beyond it.
 
     python crownseg/sam3_ceiling.py --split test1
 """
@@ -46,7 +45,7 @@ def main() -> None:
     parser.add_argument("--split", default="test1")
     parser.add_argument("--prompt", default="tree")
     parser.add_argument("--threshold", type=float, default=0.02,
-                        help="Sehr niedrig: hier zaehlt, was vorgeschlagen wird, nicht was ueberlebt.")
+                        help="Very low: what counts here is what gets proposed, not what survives.")
     parser.add_argument("--iou-thresh", type=float, default=0.5)
     parser.add_argument("--min-area", type=int, default=400)
     parser.add_argument("--tiles", type=int, default=20)
@@ -79,8 +78,8 @@ def main() -> None:
         proposals = [i for i in (met.instance_from_mask(np.asarray(m, bool)) for m in masks)
                      if i is not None and i.area >= floor]
 
-        # Jede wahre Krone gegen alle Vorschlaege -- keine Zuordnung, keine
-        # Konkurrenz. Es geht allein darum, ob der Vorschlag existiert.
+        # Every true crown against all proposals -- no assignment, no competition.
+        # The only question is whether the proposal exists.
         hit = sum(1 for gt in truth if any(met.iou(p, gt) >= args.iou_thresh for p in proposals))
         total_gt += len(truth)
         covered += hit

@@ -1,19 +1,19 @@
-"""Die Tiefen- und Hoehenkarten des feinabgestimmten Modells als Dateien ablegen.
+"""Write the depth and height maps of the fine-tuned model out as files.
 
-Gedacht zum Weiterverarbeiten, nicht zum Anschauen. Jede Karte kommt in drei
-Fassungen, weil die Ansprueche verschieden sind:
+Intended for further processing, not for looking at. Every map comes in three
+versions, because the requirements differ:
 
-    tiefe_m/   *.npy   float32, Meter. Abstand zur Kamera. Verlustfrei.
-    hoehe_m/   *.npy   float32, Meter ueber Boden -- Flughoehe minus Tiefe.
-                       Das ist die Zahl, aus der Baumhoehen werden.
-    tiefe_cm/  *.png   uint16, Zentimeter. Fuer alles, was kein npy liest;
-                       1 cm Aufloesung, bis 655 m.
-    vorschau/  *.jpg   Hoehe ueber Boden, farbig, mit Farbkeil und Werteangabe.
-                       Nur zum Draufschauen -- zum Rechnen die npy nehmen.
+    tiefe_m/   *.npy   float32, metres. Distance to the camera. Lossless.
+    hoehe_m/   *.npy   float32, metres above ground -- altitude minus depth.
+                       This is the number tree heights come from.
+    tiefe_cm/  *.png   uint16, centimetres. For anything that cannot read npy;
+                       1 cm resolution, up to 655 m.
+    vorschau/  *.jpg   Height above ground, in colour, with a wedge and values.
+                       For looking only -- use the npy for computation.
 
-Die Hoehe ueber Boden haengt an der angenommenen Flughoehe, die Tiefe nicht.
-Wo die Flughoehe geschaetzt ist, steht das in `karten.csv` -- die Tiefenkarte
-bleibt davon unberuehrt.
+The height above ground depends on the assumed flight altitude, the depth does
+not. Where the altitude is estimated, `karten.csv` says so -- the depth map is
+unaffected by it.
 
     python depthft/karten_export.py --hfov-deg 48.0
 """
@@ -89,13 +89,12 @@ Datenherkunft: FORTRESS, Schiefer, Frey & Kattenborn 2022, CC BY 4.0.
 
 def kamera_pruefen(bild, pfad, erwartete_breite: int = 1920, erwartetes_verhaeltnis: float = 16 / 9,
                    toleranz: float = 0.02) -> str | None:
-    """Warnen, wenn ein Bild nicht aus derselben Kamera stammen kann.
+    """Warn when an image cannot come from the same camera.
 
-    Der vorgegebene Bildwinkel gilt fuer die Frames der Drohne, 1920x1080. Ein
-    Bildschirmfoto oder ein zugeschnittenes Bild hat einen anderen Ausschnitt und
-    damit einen anderen Bildwinkel -- die Tiefen waeren um einen unbekannten
-    Faktor falsch, ohne dass man es dem Ergebnis ansieht. Im Ordner `urban`
-    lagen genau solche Dateien.
+    The supplied field of view holds for the drone frames, 1920x1080. A screenshot
+    or a cropped image has a different framing and therefore a different field of
+    view -- the depths would be wrong by an unknown factor without it showing in
+    the result. The folder `urban` contained exactly such files.
     """
     h, w = bild.shape[:2]
     verhaeltnis = w / max(h, 1)
@@ -120,10 +119,10 @@ def main() -> None:
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--ft", type=Path, default=Path("/scratch/shared/nik/runs/depthft/bestes"))
     parser.add_argument("--modellart", default="tiefe", choices=("tiefe", "hoehe"),
-                        help="tiefe: ueber die Tiefe, mit Gelaendemodell. hoehe: ein Checkpoint, "
-                             "der Meter unmittelbar ausgibt -- lokal etwas genauer, unterscheidet "
-                             "aber nicht zwischen Bestaenden (r = -0.16), weil ihm die "
-                             "Massstabsreferenz fehlt.")
+                        help="tiefe: via the depth, with a terrain model. hoehe: a checkpoint "
+                             "that outputs metres directly -- locally somewhat more accurate, "
+                             "but it does not distinguish between stands (r = -0.16), because "
+                             "it lacks the scale reference.")
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_karten"))
     parser.add_argument("--hfov-deg", type=float, default=48.0)
@@ -131,7 +130,7 @@ def main() -> None:
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE",
                         default=["dense=51", "dense1=69", "mixed=92", "mixed1=103",
                                  "pines=60", "urban=120"])
-    parser.add_argument("--zip", action="store_true", help="Zusaetzlich ein zip danebenlegen.")
+    parser.add_argument("--zip", action="store_true", help="Also place a zip next to it.")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     args = parser.parse_args()
 
@@ -165,13 +164,13 @@ def main() -> None:
 
         np.save(args.out / "tiefe_m" / f"{name}.npy", tiefe)
         np.save(args.out / "hoehe_m" / f"{name}.npy", hoehe)
-        # 0 bleibt als "kein Wert" frei, deshalb erst ab 1 cm.
+        # 0 stays reserved for "no value", hence starting at 1 cm.
         cm = np.clip(np.round(tiefe * 100.0), 1, 65535).astype(np.uint16)
         cv2.imwrite(str(args.out / "tiefe_cm" / f"{name}.png"), cm)
-        # Farbkeil und Werteangabe gehoeren ins Bild: ohne sie sieht man zwar,
-        # wo es hoch ist, aber nicht wie hoch -- und weil jede Vorschau auf
-        # ihren eigenen Wertebereich gespreizt ist, bedeutet dieselbe Farbe in
-        # zwei Frames Verschiedenes.
+        # The wedge and the values belong in the image: without them you can see
+        # where it is high but not how high -- and because every preview is
+        # stretched to its own value range, the same colour means different things
+        # in two frames.
         unten, oben = float(np.percentile(hoehe, 2)), float(np.percentile(hoehe, 98))
         vorschau = beschriften(hoehenbild(hoehe, oben, unten), name,
                                f"Hoehe ueber Boden {unten:.1f} - {oben:.1f} m | "

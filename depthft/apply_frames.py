@@ -1,19 +1,19 @@
-"""Beide Modelle auf unsere eigenen Drohnenframes -- pur gegen feinabgestimmt.
+"""Both models on our own drone frames -- pure vs. fine-tuned.
 
-Hier gibt es keine Wahrheit. Trotzdem laesst sich messen, und zwar an etwas,
-das gar keine Hoehenkarte braucht: **die Tiefe zum Boden ist die Flughoehe**.
+There is no ground truth here. It can still be measured, and on something that
+needs no height map at all: **the depth to the ground is the flight altitude**.
 
-    Flughoehe geschaetzt = 95. Perzentil der Tiefe
-    Kronenhoehe          = 95. Perzentil minus 2. Perzentil der Tiefe
+    estimated altitude = 95th percentile of the depth
+    crown height       = 95th percentile minus 2nd percentile of the depth
 
-Die zweite Zahl ist die wichtigere, weil sie ohne jede Annahme auskommt: die
-Spanne zwischen Boden und Wipfel ist die Baumhoehe, ganz gleich wie hoch die
-Drohne wirklich hing. Ein Modell, das den Bestand auf 6 m Hoehe zusammendrueckt,
-faellt hier sofort auf -- auch dann, wenn seine Tiefenkarte huebsch aussieht.
+The second number is the more important one, because it needs no assumption at
+all: the span between ground and treetop is the tree height, no matter how high
+the drone actually hung. A model that compresses the stand to 6 m is caught
+immediately here -- even when its depth map looks pretty.
 
-Ist die Flughoehe bekannt (aus dem Ordnernamen wie `80m`, oder ueber
-`--altitudes`), kommen zwei weitere Pruefungen dazu: das Bodenniveau muss bei
-0 m liegen, und kein Bildpunkt darf unter dem Boden sitzen.
+If the flight altitude is known (from a folder name such as `80m`, or via
+`--altitudes`), two further checks are added: the ground level has to be at 0 m,
+and no pixel may sit below the ground.
 
     python depthft/apply_frames.py --ft /scratch/shared/nik/runs/depthft/bestes
     python depthft/apply_frames.py --altitudes pines=35 dense=60 urban=50
@@ -40,12 +40,12 @@ BILDENDUNGEN = {".jpg", ".jpeg", ".png"}
 
 
 def flughoehe_von(ordner: str, vorgaben: dict[str, float], rueckfall: float) -> tuple[float, str]:
-    """Reihenfolge: --altitudes, dann Zahl im Ordnernamen, dann Rueckfallwert.
+    """Order: --altitudes, then a number in the folder name, then the fallback.
 
-    Der Ordnername zaehlt nur, wenn er **ganz** aus der Zahl besteht, optional
-    mit angehaengtem `m`: `80m` und `100` sind Hoehenangaben, `mixed1` und
-    `dense1` sind es nicht -- dort ist die 1 eine laufende Nummer. Eine Regex,
-    die irgendwo im Namen sucht, macht daraus eine Flughoehe von einem Meter.
+    The folder name only counts if it consists **entirely** of the number,
+    optionally with a trailing `m`: `80m` and `100` are altitudes, `mixed1` and
+    `dense1` are not -- there the 1 is a serial number. A regex searching anywhere
+    in the name would turn that into a flight altitude of one metre.
     """
     if ordner in vorgaben:
         return vorgaben[ordner], "vorgabe"
@@ -66,11 +66,11 @@ def vorgaben_lesen(eintraege: list[str] | None) -> dict[str, float]:
 
 
 def pruefen(d: np.ndarray, flughoehe: float) -> dict[str, float]:
-    """Kennzahlen aus der Tiefenkarte allein.
+    """Metrics from the depth map alone.
 
-    `boden` und `wipfel` sind Perzentile statt Extremwerte: ein einzelnes
-    fehlgeschaetztes Pixel -- eine Spiegelung, ein Bildrand -- wuerde sonst die
-    ganze Auswertung bestimmen.
+    `boden` and `wipfel` are percentiles rather than extremes: a single
+    mis-estimated pixel -- a reflection, an image border -- would otherwise
+    determine the whole evaluation.
     """
     boden, wipfel = float(np.percentile(d, 95)), float(np.percentile(d, 2))
     hoehe = flughoehe - d
@@ -92,16 +92,16 @@ def main() -> None:
     parser.add_argument("--pur", default="apple/DepthPro-hf")
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft_frames"))
-    parser.add_argument("--folders", nargs="*", default=None, help="Vorgabe: alle Unterordner.")
+    parser.add_argument("--folders", nargs="*", default=None, help="Default: every subfolder.")
     parser.add_argument("--hfov-deg", type=float, default=73.7,
-                        help="Horizontaler Bildwinkel unserer Kamera. Schaetzwert, "
-                             "solange keine EXIF-Angabe vorliegt.")
-    parser.add_argument("--altitude", type=float, default=100.0, help="Rueckfall, wenn nichts anderes greift.")
+                        help="Horizontal field of view of our camera. An estimate, "
+                             "as long as no EXIF value is available.")
+    parser.add_argument("--altitude", type=float, default=100.0, help="Fallback when nothing else applies.")
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE")
     parser.add_argument("--fovkopf", action="store_true",
-                        help="Zusaetzlich mit geschaetztem statt vorgegebenem Bildwinkel rechnen.")
+                        help="Also compute with an estimated rather than a supplied FOV.")
     parser.add_argument("--max-kante", type=int, default=0,
-                        help="Frames vorher verkleinern; 0 laesst sie in Originalgroesse.")
+                        help="Downscale the frames first; 0 leaves them at original size.")
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     args = parser.parse_args()
 
@@ -176,8 +176,8 @@ def main() -> None:
     print(kreuz.to_string(float_format=lambda v: f"{v:8.1f}"))
     kreuz.to_csv(args.out / "kronenhoehe_je_ordner.csv")
 
-    # Wie stark haben sich die Karten geaendert: bleibt die Struktur, verschiebt
-    # sich nur der Massstab? Dann waere das Feinabstimmen eine reine Kalibrierung.
+    # How much did the maps change: does the structure stay and only the scale
+    # shift? Then the fine-tuning would be a pure calibration.
     if len(modelle) == 2:
         aehnlich = []
         for eintrag in karten.values():
@@ -187,10 +187,10 @@ def main() -> None:
         print(f"\nKorrelation der Hoehenkarten pur/feinabgestimmt: "
               f"Mittel {np.mean(aehnlich):.3f}, Minimum {np.min(aehnlich):.3f}")
 
-    # Jede Karte auf ihren eigenen Wertebereich gespreizt, der Massstab als
-    # Balken darunter. Eine gemeinsame Skala waere sachlich richtig, macht die
-    # Kachel des puren Modells aber zu einer einfarbigen Flaeche -- es liegt um
-    # Faktor 50 daneben, also faellt alles jenseits des Skalenendes zusammen.
+    # Every map stretched to its own value range, with the magnitude as a bar
+    # underneath. A common scale would be factually right, but it turns the tile
+    # of the pure model into a single flat colour -- it is off by a factor of 50,
+    # so everything beyond the end of the scale collapses together.
     ROT, BLAU = (110, 110, 245), (245, 190, 110)
     farbe_von = {"pur": ROT, "feinabgestimmt": BLAU}
     for (ordnername, dateiname), eintrag in karten.items():
@@ -204,8 +204,8 @@ def main() -> None:
         cv2.imwrite(str(args.out / "vergleich" / f"{ordnername}_{Path(dateiname).stem}.jpg"),
                     abbildung, [cv2.IMWRITE_JPEG_QUALITY, 90])
 
-        # Das Relief getrennt: es zeigt die Form unabhaengig vom Massstab und
-        # gehoert deshalb nicht in dieselbe Abbildung wie die Hoehenwerte.
+        # The relief separately: it shows the shape independently of the scale and
+        # therefore does not belong in the same figure as the height values.
         relief = [beschriften(grauwert(hillshade(eintrag[n])), f"{n}, Relief") for n in vorhanden]
         if relief:
             cv2.imwrite(str(args.out / "relief" / f"{ordnername}_{Path(dateiname).stem}.jpg"),

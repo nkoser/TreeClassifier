@@ -1,8 +1,8 @@
-"""Die BAMFORESTS-Wahrheit sichtbar machen -- Bild, Umrisse, Instanzen.
+"""Make the BAMFORESTS ground truth visible -- image, outlines, instances.
 
-Ohne Modell, ohne GPU. Dient dazu, sich anzuschauen, was ueberhaupt annotiert
-ist: wo die Grenzen liegen, wie gross die Kronen sind und welcher Anteil der
-Kachel gar keine Annotation hat.
+No model, no GPU. It exists to let you look at what is actually annotated: where
+the boundaries lie, how large the crowns are and what share of the tile carries
+no annotation at all.
 
     python crownseg/show_gt.py --split test1 --tiles 3
 """
@@ -21,7 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import bamforests as bam  # noqa: E402
 
-# Wiederholt sich ab 20 Kronen, reicht -- Nachbarn bekommen verschiedene Farben.
+# Repeats after 20 crowns, which is enough -- neighbours get different colours.
 PALETTE = np.array([
     (231, 76, 60), (46, 204, 113), (52, 152, 219), (241, 196, 15), (155, 89, 182),
     (26, 188, 156), (230, 126, 34), (52, 73, 94), (149, 165, 166), (211, 84, 0),
@@ -31,7 +31,7 @@ PALETTE = np.array([
 
 
 def render(image_bgr: np.ndarray, rings: list[np.ndarray]) -> np.ndarray:
-    """Drei Ansichten nebeneinander: roh, Umrisse, gefuellte Instanzen."""
+    """Three views side by side: raw, outlines, filled instances."""
     outlines = image_bgr.copy()
     filled = image_bgr.copy()
     overlay = image_bgr.copy()
@@ -63,13 +63,13 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--prepared", type=Path, default=bam.BAMFORESTS / "crownseg")
     parser.add_argument("--split", default="test1",
-                        help="Ordnername unter --prepared; BAMFORESTS nutzt test1/test2, Quebec test.")
-    parser.add_argument("--stems", nargs="*", default=None, help="Bestimmte Kacheln statt gleichmaessig gegriffener.")
+                        help="Folder name under --prepared; BAMFORESTS uses test1/test2, Quebec test.")
+    parser.add_argument("--stems", nargs="*", default=None, help="Specific tiles instead of an even sample.")
     parser.add_argument("--tiles", type=int, default=3)
     parser.add_argument("--out", type=Path, default=Path("results_crownseg/gt"))
-    parser.add_argument("--scale", type=float, default=0.5, help="Ausgabe verkleinern; 1.0 = volle Aufloesung.")
+    parser.add_argument("--scale", type=float, default=0.5, help="Shrink the output; 1.0 = full resolution.")
     parser.add_argument("--labels", type=Path, default=None,
-                        help="Ordner mit <stem>_labels.png; wird als vierte Ansicht daneben gelegt.")
+                        help="Folder with <stem>_labels.png; added as a fourth view alongside.")
     args = parser.parse_args()
 
     directory = args.prepared / args.split

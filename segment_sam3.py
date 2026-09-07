@@ -1,19 +1,19 @@
-"""Kronenabgrenzung mit SAM 3 (textgepromptete Instanzsegmentierung).
+"""Crown delineation with SAM 3 (text-prompted instance segmentation).
 
-Anderer Mechanismus als SAM 1/2: statt ein blindes Punktraster abzutasten und
-hinterher Kronen herauszufiltern, bekommt SAM 3 den Begriff direkt als Text
-("tree") und liefert Instanzen mit Score. Damit entfaellt der Skalenstapel --
-SAM 1 gibt zu einem Punkt gleichzeitig Blatt, Ast und Krone zurueck, und die
-Ueberlappungsaufloesung muss das aufraeumen.
+A different mechanism from SAM 1/2: instead of sampling a blind point grid and
+filtering crowns out afterwards, SAM 3 gets the term directly as text ("tree")
+and returns instances with a score. That removes the scale stack -- SAM 1 returns
+leaf, branch and crown for one point at the same time, and the overlap resolution
+has to clean that up.
 
-Genau die Faelle, an denen SAM 1 hier scheitert -- beschattete Kronen und
-zerfranste Nadelbaeume ohne geschlossene Kante -- sind die, in denen semantisches
-Wissen ueber "Baum" mehr hilft als Kantenkontrast.
+Exactly the cases where SAM 1 fails here -- shaded crowns and frayed conifers
+without a closed edge -- are the ones where semantic knowledge about "tree" helps
+more than edge contrast.
 
-Zugang: facebook/sam3 ist auf HuggingFace gated. Token unter
-$HF_HOME/token hinterlegen (siehe README), dann laeuft es ohne weitere Aenderung.
+Access: facebook/sam3 is gated on HuggingFace. Put a token in $HF_HOME/token
+(see the README), then it runs without any further change.
 
-Beispiel:
+Example:
     python segment_sam3.py --prompt tree --frames dense/frame_000073.jpg
 """
 
@@ -35,8 +35,8 @@ SAM3_MODEL = "facebook/sam3"
 
 
 def tile_boxes(width: int, height: int, tiles: int, overlap: float) -> list[tuple[int, int, int, int]]:
-    """Ueberlappende Kacheln. Ohne Kacheln schrumpft eine 100-px-Krone beim
-    internen Resize auf gut 50 px -- klein genug, dass Instanzen verloren gehen."""
+    """Overlapping tiles. Without tiling, a 100 px crown shrinks to a good 50 px
+    in the internal resize -- small enough for instances to get lost."""
     if tiles <= 1:
         return [(0, 0, width, height)]
 
@@ -54,12 +54,12 @@ def tile_boxes(width: int, height: int, tiles: int, overlap: float) -> list[tupl
 
 
 def touches_inner_edge(mask: np.ndarray, at_image_edge: tuple[bool, bool, bool, bool]) -> bool:
-    """Beruehrt die Maske eine Kachelkante, die keine Bildkante ist?
+    """Does the mask touch a tile edge that is not an image edge?
 
-    Solche Instanzen sind angeschnitten. Weil die Kacheln ueberlappen, ist
-    dasselbe Objekt in der Nachbarkachel vollstaendig enthalten -- die
-    angeschnittene Variante darf also verworfen werden. Ohne das entstehen
-    schnurgerade Schnitte quer durch Kronen entlang der Kachelraster.
+    Such instances are cut off. Because the tiles overlap, the same object is
+    contained completely in the neighbouring tile -- so the cut version may be
+    discarded. Without this you get dead-straight cuts across crowns along the
+    tile grid.
     """
     left, top, right, bottom = at_image_edge
     return (
@@ -72,7 +72,7 @@ def touches_inner_edge(mask: np.ndarray, at_image_edge: tuple[bool, bool, bool, 
 
 @torch.no_grad()
 def segment_tile(model, processor, image_rgb: np.ndarray, prompt: str, threshold: float, device):
-    """Instanzmasken einer Kachel in Kachelkoordinaten."""
+    """Instance masks of one tile, in tile coordinates."""
     inputs = processor(images=Image.fromarray(image_rgb), text=prompt, return_tensors="pt").to(device)
     outputs = model(**inputs)
     results = processor.post_process_instance_segmentation(
@@ -90,8 +90,8 @@ def segment_tile(model, processor, image_rgb: np.ndarray, prompt: str, threshold
 
 
 def merge_instances(candidates: list[tuple[np.ndarray, float]], max_overlap: float) -> list[tuple[np.ndarray, float]]:
-    """Kacheluebergreifend zusammenfuehren: nach Score gierig annehmen, stark
-    ueberlappende Duplikate aus dem Kachelrand verwerfen."""
+    """Merge across tiles: accept greedily by score, discard strongly overlapping
+    duplicates coming from the tile margins."""
     candidates.sort(key=lambda item: -item[1])
     accepted: list[tuple[np.ndarray, float]] = []
     occupied: np.ndarray | None = None
@@ -112,26 +112,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frames", nargs="*", default=None)
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_sam3")
     parser.add_argument("--model", default=SAM3_MODEL)
-    parser.add_argument("--prompt", default="tree", help='Textprompt, z.B. "tree", "tree crown", "treetop".')
-    parser.add_argument("--threshold", type=float, default=0.3, help="Score-Schwelle der Instanzen.")
+    parser.add_argument("--prompt", default="tree", help='Text prompt, e.g. "tree", "tree crown", "treetop".')
+    parser.add_argument("--threshold", type=float, default=0.3, help="Score threshold for the instances.")
 
-    parser.add_argument("--tiles", type=int, default=2, help="Kacheln je Achse (1 = ganzes Bild).")
+    parser.add_argument("--tiles", type=int, default=2, help="Tiles per axis (1 = whole image).")
     parser.add_argument("--tiles-multi", type=int, nargs="*", default=None,
-                        help="Mehrere Kachelstufen kombinieren, z.B. --tiles-multi 1 2 3. "
-                             "Default: nur --tiles.")
+                        help="Combine several tile levels, e.g. --tiles-multi 1 2 3. "
+                             "Default: only --tiles.")
     parser.add_argument("--tile-overlap", type=float, default=0.15)
     parser.add_argument("--max-overlap", type=float, default=0.30)
     parser.add_argument("--drop-cut", action=argparse.BooleanOptionalAction, default=True,
-                        help="An Kachelkanten angeschnittene Instanzen verwerfen (Default an).")
+                        help="Discard instances cut by a tile edge (on by default).")
 
-    # Formfilter identisch zu segment_sam.py, damit die Ablation vergleichbar bleibt.
+    # Shape filter identical to segment_sam.py, so the ablation stays comparable.
     parser.add_argument("--crown-px", type=float, default=100.0)
     parser.add_argument("--min-area-factor", type=float, default=0.12)
     parser.add_argument("--max-area-factor", type=float, default=5.0)
     parser.add_argument("--min-compactness", type=float, default=0.25)
     parser.add_argument("--min-solidity", type=float, default=0.65)
     parser.add_argument("--no-shape-filter", action="store_true",
-                        help="Formfilter abschalten -- SAM 3 liefert bereits Instanzen, kein Skalenstapel.")
+                        help="Turn the shape filter off -- SAM 3 already returns instances, not a scale stack.")
 
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     return parser.parse_args()
@@ -173,11 +173,10 @@ def main() -> None:
         image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
         height, width = image_rgb.shape[:2]
 
-        # Mehrskalen: eine Kachelung bestimmt, wie gross eine Krone dem Modell
-        # erscheint. Bei geschlossenem Kronendach variieren die Kronengroessen
-        # stark, und eine feste Stufe erwischt nur einen Teil davon. Mehrere
-        # Stufen laufen zu lassen und die Instanzen anschliessend nach Score
-        # zusammenzufuehren, faengt kleine wie grosse Kronen ein.
+        # Multi-scale: one tiling fixes how large a crown appears to the model.
+        # In a closed canopy the crown sizes vary a lot, and a fixed level only
+        # catches part of them. Running several levels and merging the instances
+        # afterwards by score catches small and large crowns alike.
         candidates: list[tuple[np.ndarray, float]] = []
         angeschnitten = 0
         for tiles in args.tiles_multi:

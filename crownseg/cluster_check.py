@@ -1,22 +1,21 @@
-"""Trennen die Merkmalscluster tatsaechlich Baumarten?
+"""Do the feature clusters actually separate tree species?
 
-`cluster_crowns.py` gruppiert Kronen nach ihren Merkmalsvektoren, weil der
-kanadische Klassenkopf fuer mitteleuropaeische Bestaende keine richtige Antwort
-kennt. Die Idee ist plausibel -- die Merkmale beschreiben das Aussehen der Krone,
-nicht ihren Namen -- aber sie wurde nie geprueft. Beurteilt wurde nach
-Kontaktboegen, also nach Augenschein.
+`cluster_crowns.py` groups crowns by their feature vectors, because the Canadian
+class head has no correct answer for Central European stands. The idea is
+plausible -- the features describe the appearance of the crown, not its name --
+but it was never checked. It had been judged from contact sheets, i.e. by eye.
 
-Quebec Zone 3 erlaubt die Pruefung: dort steht an jeder Krone die Art. Geclustert
-wird ohne diese Labels, verglichen wird danach. Gemessen mit
+Quebec zone 3 allows the check: there every crown carries its species.
+Clustering runs without those labels, the comparison comes afterwards. Measured
+with
+  ARI   adjusted Rand index -- agreement of the grouping, corrected for chance.
+        0 means as good as random, 1 means identical.
+  NMI   normalised mutual information -- how much the clusters reveal about the species.
+  purity  share of crowns belonging to the majority species of their cluster.
 
-  ARI   Adjusted Rand Index -- Uebereinstimmung der Gruppierung, zufallskorrigiert.
-        0 heisst wie zufaellig, 1 heisst identisch.
-  NMI   Normalized Mutual Information -- wie viel die Cluster ueber die Art verraten.
-  Reinheit  Anteil der Kronen, die zur Mehrheitsart ihres Clusters gehoeren.
-
-Zum Vergleich laeuft dieselbe Messung auf dem Klassenkopf, der auf dieser
-Domaene 90.1 % erreicht. Das ist die Obergrenze: was die Merkmale hergeben, wenn
-jemand sie beschriftet hat.
+For comparison the same measurement runs on the class head, which reaches 90.1 %
+on this domain. That is the ceiling: what the features yield once somebody has
+labelled them.
 
     python crownseg/cluster_check.py --clusters 14
 """
@@ -125,7 +124,7 @@ def main() -> None:
         rows.append({"k": k, "ari": ari, "nmi": nmi, "reinheit": reinheit})
         print(f"{k:4d} {ari:7.3f} {nmi:7.3f} {reinheit:9.1%}")
 
-    # Bezugswerte: der beschriftete Kopf, und eine zufaellige Gruppierung.
+    # Reference values: the labelled head, and a random grouping.
     kopf = np.array([class_names[i].split()[0][0] + ". " + class_names[i].split()[-1]
                      if len(class_names[i].split()) > 1 else class_names[i]
                      for i in probabilities.argmax(axis=1)])

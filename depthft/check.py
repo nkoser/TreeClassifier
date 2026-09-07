@@ -1,21 +1,21 @@
-"""Vor dem Training: passt die Wahrheit ueberhaupt zum Bild?
+"""Before training: does the truth match the image at all?
 
-Der teuerste Fehler in dieser Kette waere ein Versatz zwischen Orthomosaik und
-Hoehenmodell -- die Georeferenzierung stimmt nicht, die Kronen im nDSM sitzen
-zwei Meter neben denen im Bild, und das Training lernt geduldig Unsinn. Das
-sieht man sofort, wenn man beides nebeneinanderlegt.
+The most expensive error in this chain would be an offset between orthomosaic
+and height model -- the georeferencing is off, the crowns in the nDSM sit two
+metres beside those in the image, and the training patiently learns nonsense.
+You see that at once when you put both side by side.
 
-Geprueft wird dreierlei:
+Three things are checked:
 
-  Geometrie    Stimmen Bodenaufloesung, Bodenbreite und Tiefenbereich mit dem
-               ueberein, was aus Flughoehe und Bildwinkel folgen muss?
-  Deckung      Liegt das Kronenrelief des nDSM auf den Kronen im Bild? Der
-               Vergleichsstreifen zeigt Bild, Hoehe und Relief nebeneinander.
-  Ausgangslage Was liefert das pure Depth Pro auf diesen Ausschnitten? Diese
-               Zahlen sind die Messlatte, gegen die spaeter verglichen wird.
+  geometry     Do ground sampling, ground width and depth range agree with what
+               must follow from flight altitude and field of view?
+  coverage     Does the crown relief of the nDSM lie on the crowns in the image?
+               The comparison strip shows image, height and relief side by side.
+  baseline     What does pure Depth Pro deliver on these crops? Those numbers are
+               the bar everything is later compared against.
 
     python depthft/check.py --n 8
-    python depthft/check.py --n 8 --kein-modell     # nur Daten, ohne GPU
+    python depthft/check.py --n 8 --kein-modell     # data only, no GPU
 """
 
 from __future__ import annotations
@@ -39,7 +39,7 @@ def main() -> None:
     parser.add_argument("--out", type=Path,
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft/check"))
     parser.add_argument("--split", default="train", choices=("train", "val", "test"))
-    parser.add_argument("--n", type=int, default=8, help="Ausschnitte insgesamt.")
+    parser.add_argument("--n", type=int, default=8, help="Total number of crops.")
     parser.add_argument("--crop-px", type=int, default=1536)
     parser.add_argument("--seitenverhaeltnis", type=float, default=16 / 9)
     parser.add_argument("--pur", default="apple/DepthPro-hf")
@@ -47,7 +47,7 @@ def main() -> None:
     parser.add_argument("--hoehe-min", type=float, default=25.0)
     parser.add_argument("--hoehe-max", type=float, default=120.0)
     parser.add_argument("--abstand-min", type=float, default=20.0)
-    parser.add_argument("--kein-modell", action="store_true", help="Nur die Daten pruefen.")
+    parser.add_argument("--kein-modell", action="store_true", help="Check the data only.")
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     args = parser.parse_args()
@@ -93,7 +93,7 @@ def main() -> None:
         d_pur = None
         if model is not None:
             D, fov_kopf = inferenz.roh(model, bild, device=device)
-            d_pur = k / D            # mit bekannter Kamera, nicht mit dem geschaetzten Winkel
+            d_pur = k / D            # with the known camera, not the estimated angle
             p, g = d_pur[maske], d_gt[maske]
             fehler = float(np.mean(np.abs(p - g) / g))
             skala = float(np.median(p) / np.median(g))

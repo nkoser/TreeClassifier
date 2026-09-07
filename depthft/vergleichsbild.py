@@ -1,23 +1,23 @@
-"""Pur gegen feinabgestimmt, so dargestellt, dass man es lesen kann.
+"""Pure vs. fine-tuned, presented so that it can be read.
 
-Eine gemeinsame Farbskala fuer beide Modelle klingt fair, macht die Abbildung
-aber unbrauchbar: pures Depth Pro liegt um Faktor 50 daneben, also ist seine
-Kachel durchgehend gesaettigt und zeigt nichts. Umgekehrt verschweigt eine je
-eigene Skala genau den Fehler, um den es geht.
+A common colour scale for both models sounds fair but makes the figure useless:
+pure Depth Pro is off by a factor of 50, so its tile is uniformly saturated and
+shows nothing. Conversely, a separate scale per map conceals exactly the error
+that is at issue.
 
-Deshalb beides nebeneinander, plus ein Schnitt quer durchs Bild:
+So both side by side, plus a cut across the image:
 
-  Zeile 1   Bild, Wahrheit und beide Vorhersagen -- jede mit **eigener** Skala.
-            Hier ist zu sehen, ob die *Struktur* stimmt: sitzen Kronen dort, wo
-            Kronen sind?
-  Zeile 2   Dieselben Karten auf **gemeinsamer** Skala, an der Wahrheit
-            ausgerichtet. Hier ist zu sehen, ob der *Massstab* stimmt.
-  Zeile 3   Ein waagerechter Schnitt durch die Bildmitte, alle Kurven in einem
-            Diagramm. Das ist die ehrlichste Ansicht: die Kurve von pur liegt
-            flach bei einem Meter, waehrend die Wahrheit ueber 30 m schwingt.
+  row 1     Image, truth and both predictions -- each on its **own** scale. Here
+            you can see whether the *structure* is right: do crowns sit where
+            crowns are?
+  row 2     The same maps on a **common** scale, aligned to the truth. Here you
+            can see whether the *scale* is right.
+  row 3     A horizontal cut through the middle of the image, all curves in one
+            plot. That is the most honest view: the curve of the pure model lies
+            flat at one metre while the truth swings over 30 m.
 
-Auf den FORTRESS-Testgebieten laeuft die Wahrheit mit. Auf unseren eigenen
-Frames gibt es keine -- dort bleiben Bild und die beiden Vorhersagen.
+On the FORTRESS test sites the truth comes along. On our own frames there is
+none -- there only the image and the two predictions remain.
 
     python depthft/vergleichsbild.py --quelle fortress --n 4
     python depthft/vergleichsbild.py --quelle frames --hfov-deg 48.0
@@ -49,7 +49,7 @@ def kachel(hoehe: np.ndarray, unten: float, oben: float, titel: str, zweite: str
 
 def schnitt_diagramm(kurven: list[tuple[str, np.ndarray, tuple[int, int, int]]],
                      breite: int, hoehe: int, y_titel: str) -> np.ndarray:
-    """Einfaches Liniendiagramm, ohne Zusatzbibliothek gezeichnet."""
+    """A simple line plot, drawn without an extra library."""
     bild = np.full((hoehe, breite, 3), 22, np.uint8)
     rand_l, rand_u, rand_r, rand_o = 70, 44, 18, 40
     flaeche = (breite - rand_l - rand_r, hoehe - rand_u - rand_o)
@@ -75,8 +75,8 @@ def schnitt_diagramm(kurven: list[tuple[str, np.ndarray, tuple[int, int, int]]],
 
     for spalte, (name, kurve, farbe) in enumerate(kurven):
         n = len(kurve)
-        # Luecken (keine Wahrheit vorhanden) bleiben Luecken, statt als Linie
-        # auf null durchzulaufen.
+        # Gaps (no truth available) stay gaps, instead of running through as a
+        # line at zero.
         vorher = None
         for i, w in enumerate(kurve):
             if not np.isfinite(w):
@@ -95,13 +95,13 @@ def schnitt_diagramm(kurven: list[tuple[str, np.ndarray, tuple[int, int, int]]],
 
 def eine_abbildung(rgb: np.ndarray, karten: list[tuple[str, np.ndarray, tuple[int, int, int]]],
                    kopf: str, bezug: np.ndarray | None) -> np.ndarray:
-    """Zwei Kachelzeilen und ein Schnitt, untereinander."""
+    """Two rows of tiles and a cut, stacked."""
     h, w = rgb.shape[:2]
     ziel_h = 420
     faktor = ziel_h / h
     klein = lambda a: cv2.resize(a, (int(w * faktor), ziel_h), interpolation=cv2.INTER_AREA)  # noqa: E731
 
-    # Gemeinsame Skala: an der Wahrheit ausgerichtet, sonst am ersten Eintrag.
+    # Common scale: aligned to the truth, otherwise to the first entry.
     grundlage = bezug if bezug is not None else karten[0][1]
     g_unten, g_oben = 0.0, float(max(np.nanpercentile(grundlage, 99), 5.0))
 
@@ -116,7 +116,7 @@ def eine_abbildung(rgb: np.ndarray, karten: list[tuple[str, np.ndarray, tuple[in
         gemeinsam.append(kachel(klein(karte), g_unten, g_oben, name,
                                 f"gemeinsame Skala 0-{g_oben:.0f} m"))
 
-    zeile1 = np.hstack(eigene + [farbskala(60, ziel_h, 1.0)[:, :0]])   # ohne Keil, Skalen verschieden
+    zeile1 = np.hstack(eigene + [farbskala(60, ziel_h, 1.0)[:, :0]])   # no wedge, the scales differ
     zeile2 = np.hstack(gemeinsam + [farbskala(60, ziel_h, g_oben)])
     breite = max(zeile1.shape[1], zeile2.shape[1])
     for i, z in enumerate([zeile1, zeile2]):
@@ -145,13 +145,13 @@ def main() -> None:
                         default=Path("/home/nik/workspace/TreeClassifier/results_depthft/vergleich"))
     parser.add_argument("--n", type=int, default=4)
     parser.add_argument("--split", default="test")
-    parser.add_argument("--hfov-deg", type=float, default=48.0, help="Nur fuer --quelle frames.")
+    parser.add_argument("--hfov-deg", type=float, default=48.0, help="Only for --quelle frames.")
     parser.add_argument("--altitudes", nargs="*", metavar="ORDNER=HOEHE",
                         default=["dense=51", "dense1=69", "mixed=92", "mixed1=103",
                                  "pines=60", "urban=120"])
     parser.add_argument("--stil", default="einfach", choices=("einfach", "ausfuehrlich"),
-                        help="einfach: jede Karte eigene Skala plus Balken. "
-                             "ausfuehrlich: zusaetzlich gemeinsame Skala und Schnitt.")
+                        help="einfach: every map on its own scale plus a bar. "
+                             "ausfuehrlich: additionally a common scale and a cut.")
     parser.add_argument("--seed", type=int, default=4242)
     parser.add_argument("--device", default="auto", choices=("auto", "cuda", "cpu"))
     args = parser.parse_args()
@@ -163,8 +163,8 @@ def main() -> None:
     faelle = []
     if args.quelle == "fortress":
         from dataset import NadirFrames
-        # Ein Ausschnitt je Gebiet: die Sampleliste ist nach Gebieten gruppiert,
-        # mehrere je Gebiet lieferten sonst n-mal denselben Bestand.
+        # One crop per site: the sample list is grouped by site, so several per
+        # site would otherwise give the same stand n times.
         daten = NadirFrames(args.data, args.split, crop_px=1536, pro_gebiet=1,
                             augment=False, cache=1, seed=args.seed, fov_min=60.0, fov_max=85.0)
         for i in range(min(args.n, len(daten))):

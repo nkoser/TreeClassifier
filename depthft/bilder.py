@@ -1,4 +1,4 @@
-"""Hoehenkarten sichtbar machen -- Farbskala, Reliefschattierung, Beschriftung."""
+"""Make height maps visible -- colour scale, hillshading, labelling."""
 
 from __future__ import annotations
 
@@ -7,10 +7,10 @@ import numpy as np
 
 
 def hoehenbild(hoehe: np.ndarray, obergrenze: float, untergrenze: float = 0.0) -> np.ndarray:
-    """Hoehe ueber Boden farbig, mit vorgegebener Skala fuer die Vergleichbarkeit.
+    """Height above ground in colour, on a fixed scale for comparability.
 
-    NaN wird schwarz -- so ist im Bild zu sehen, wo gar keine Wahrheit vorliegt,
-    statt dass die Luecke als Boden durchgeht.
+    NaN becomes black -- that way the image shows where there is no truth at all,
+    instead of the gap passing as ground.
     """
     spanne = max(obergrenze - untergrenze, 1e-6)
     fehlt = ~np.isfinite(hoehe)
@@ -22,7 +22,7 @@ def hoehenbild(hoehe: np.ndarray, obergrenze: float, untergrenze: float = 0.0) -
 
 def hillshade(flaeche: np.ndarray, azimut_grad: float = 315.0, hoehe_grad: float = 45.0,
               ueberhoehung: float = 40.0) -> np.ndarray:
-    """Reliefschattierung -- macht feine Hoehenunterschiede fuer das Auge sichtbar."""
+    """Hillshading -- makes fine height differences visible to the eye."""
     dy, dx = np.gradient(cv2.GaussianBlur(flaeche.astype(np.float32), (0, 0), 2.0))
     neigung = np.arctan(np.hypot(dx, dy) * ueberhoehung)
     richtung = np.arctan2(-dx, dy)
@@ -36,7 +36,7 @@ def grauwert(x: np.ndarray) -> np.ndarray:
 
 
 def beschriften(bild: np.ndarray, text: str, zweite: str | None = None) -> np.ndarray:
-    """Kopfzeile ins Bild, damit ein Vergleichsstreifen ohne Legende lesbar ist."""
+    """A header line in the image, so a comparison strip reads without a legend."""
     bild = np.ascontiguousarray(bild)
     hoehe = 34 if zweite is None else 58
     cv2.rectangle(bild, (0, 0), (bild.shape[1], hoehe), (0, 0, 0), -1)
@@ -48,7 +48,7 @@ def beschriften(bild: np.ndarray, text: str, zweite: str | None = None) -> np.nd
 
 def balkendiagramm(werte: list[tuple[str, float, tuple[int, int, int]]], breite: int,
                    hoehe: int, titel: str) -> np.ndarray:
-    """Waagerechte Balken mit Zahl dran -- die Aussage ohne Farbskalen-Umweg."""
+    """Horizontal bars with a number on them -- the point without a colour-scale detour."""
     bild = np.full((hoehe, breite, 3), 22, np.uint8)
     cv2.putText(bild, titel, (24, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (235, 235, 235), 2, cv2.LINE_AA)
     hoechster = max(max((w for _, w, _ in werte), default=1.0), 1e-6)
@@ -68,14 +68,14 @@ def balkendiagramm(werte: list[tuple[str, float, tuple[int, int, int]]], breite:
 def einfache_abbildung(rgb_bgr: np.ndarray, karten: list, kopf: str, unterzeile: str = "Originalaufnahme",
                        ziel_h: int = 500, balken_titel: str =
                        "Wie hoch sind die Baeume? (Wipfel minus Kronenluecke, in Metern)") -> np.ndarray:
-    """Jede Karte mit eigener Skala -- und der Massstab als Balken darunter.
+    """Every map on its own scale -- with the magnitude as a bar underneath.
 
-    Eine gemeinsame Farbskala ist sachlich richtig, macht die Kachel des puren
-    Modells aber zu einer einfarbigen Flaeche: es liegt um Faktor 50 daneben,
-    also faellt alles jenseits des Skalenendes zusammen. Eine Abbildung, in der
-    man nichts erkennt, erklaert nichts -- deshalb hier jede Karte gespreizt auf
-    ihren eigenen Wertebereich, der als Text dabeisteht, und der eigentliche
-    Unterschied als Balken.
+    A common colour scale is factually right, but it turns the tile of the pure
+    model into a single flat colour: it is off by a factor of 50, so everything
+    beyond the end of the scale collapses together. A figure in which nothing is
+    discernible explains nothing -- so here every map is stretched to its own
+    value range, which is written next to it, and the actual difference is shown
+    as a bar.
     """
     h, w = rgb_bgr.shape[:2]
     faktor = ziel_h / h
@@ -96,7 +96,7 @@ def einfache_abbildung(rgb_bgr: np.ndarray, karten: list, kopf: str, unterzeile:
 
 
 def farbskala(breite: int, hoehe: int, obergrenze: float, schritte: int = 5) -> np.ndarray:
-    """Senkrechter Farbkeil mit Beschriftung in Metern."""
+    """Vertical colour wedge, labelled in metres."""
     keil = hoehenbild(np.linspace(obergrenze, 0, hoehe)[:, None].repeat(breite, 1), obergrenze)
     for i in range(schritte + 1):
         y = int(i * (hoehe - 1) / schritte)

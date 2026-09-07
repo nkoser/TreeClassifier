@@ -1,41 +1,39 @@
-"""Virtuelle Nadirframes aus den vorbereiteten FORTRESS-Rastern schneiden.
+"""Cut virtual nadir frames out of the prepared FORTRESS rasters.
 
-Ein Sample entsteht aus drei Wuerfen: Flughoehe H, Bildwinkel und Position im
-Gebiet. Daraus folgt die ganze Geometrie.
+A sample comes from three draws: flight altitude H, field of view and position
+in the site. The whole geometry follows from those.
 
-    k        = 0.5 / tan(HFOV / 2)      Brennweite geteilt durch Bildbreite
+    k        = 0.5 / tan(HFOV / 2)      focal length divided by image width
     f_px     = k * Bildbreite_px
-    GSD      = H / f_px                 Meter pro Pixel am Boden
-    Breite_m = Bildbreite_px * GSD = H / k
+    GSD      = H / f_px                 metres per pixel on the ground
+    width_m  = image_width_px * GSD = H / k
 
-`k` ist die eigentliche Groesse, nicht `f_px`: Depth Pro rechnet intern in
-**kanonischer inverser Tiefe**, und die haengt nur ueber f/Bildbreite von der
-Kamera ab, nicht von der Aufloesung ([image_processing_depth_pro.py:108]).
-Deshalb ist es unerheblich, ob ein Ausschnitt mit 768 oder 1920 Pixeln abgelegt
-wird -- entscheidend ist der Bildwinkel.
+`k` is the quantity that matters, not `f_px`: Depth Pro works internally in
+**canonical inverse depth**, which depends on the camera only through
+f/image width, not on the resolution ([image_processing_depth_pro.py:108]). So
+it does not matter whether a crop is stored at 768 or 1920 pixels -- what counts
+is the field of view.
 
-Der Bildwinkel wird breit gewuerfelt (Vorgabe 35 bis 85 Grad) und nicht auf die
-73.7 Grad unserer Kamera festgenagelt. Zwei Gruende: bei festem Winkel legt die
-Flughoehe die Bodenbreite fest, und aus 80 m sind das 120 m -- fast das ganze
-1.7-ha-Gebiet, also genau ein Ausschnitt pro Gebiet. Und breit gestreute Winkel
-sind der Weg, auf dem das Modell die kanonische Beziehung lernt statt einer
-auswendig gelernten Konstanten.
+The field of view is drawn from a wide range (default 35 to 85 degrees) rather
+than pinned to the 73.7 degrees of our camera. Two reasons: with a fixed angle
+the flight altitude fixes the ground width, and from 80 m that is 120 m -- almost
+the whole 1.7 ha site, i.e. exactly one crop per site. And widely spread angles
+are how the model learns the canonical relation instead of a memorised constant.
 
-**Warum die Ausschnitte nicht quadratisch sind.** Depth Pro quetscht jedes Bild
-auf 1536 x 1536, ohne Ruecksicht auf das Seitenverhaeltnis. Unsere Frames sind
-1920 x 1080, werden in dieser Kette also um Faktor 1.78 in der Hoehe gestaucht.
-Wer auf Quadraten trainiert und auf gestauchten Bildern anwendet, hat sich den
-Fehler selbst gebaut. Die Ausschnitte kommen deshalb im Seitenverhaeltnis der
-Zielframes und laufen anschliessend durch dieselbe Stauchung.
+**Why the crops are not square.** Depth Pro squeezes every image to 1536 x 1536,
+regardless of aspect ratio. Our frames are 1920 x 1080 and are therefore
+compressed by a factor of 1.78 in height along this chain. Whoever trains on
+squares and applies to squeezed images has built the error themselves. The crops
+therefore come in the aspect ratio of the target frames and then go through the
+same squeeze.
 
-Dazu Augmentierung gegen den Domaenenunterschied: das Ortho ist ein aus vielen
-Aufnahmen gerechnetes, gestochen scharfes Produkt, unsere Frames sind einzelne
-Videobilder aus 80 m. Weichzeichnung, Rauschen und JPEG-Artefakte schliessen den
-Abstand ein Stueck weit.
+On top of that, augmentation against the domain difference: the ortho is a
+razor-sharp product computed from many captures, while our frames are single
+video images from 80 m. Blur, noise and JPEG artefacts close some of that gap.
 
-Die Wahrheit ist bei 5 cm aufgeloest (so liegt das nDSM vor). Unterhalb von etwa
-25 m Flughoehe waere die Tiefenkarte glatter als das Bild -- daher die
-Untergrenze.
+The truth is resolved at 5 cm (that is how the nDSM comes). Below about 25 m
+flight altitude the depth map would be smoother than the image -- hence the lower
+bound.
 """
 
 from __future__ import annotations
@@ -49,12 +47,12 @@ import cv2
 import numpy as np
 import torch
 
-MODELL_MITTEL = 0.5   # aus preprocessor_config.json von apple/DepthPro-hf
+MODELL_MITTEL = 0.5   # from preprocessor_config.json of apple/DepthPro-hf
 MODELL_STREUUNG = 0.5
 
 
 def k_von_fov(fov_grad: float) -> float:
-    """Brennweite geteilt durch Bildbreite -- die aufloesungsfreie Kamerakonstante."""
+    """Focal length divided by image width -- the resolution-free camera constant."""
     return 0.5 / math.tan(math.radians(fov_grad) / 2.0)
 
 
@@ -63,11 +61,11 @@ def fov_von_k(k: float) -> float:
 
 
 class Rasterlager:
-    """Haelt die zuletzt gebrauchten Gebietsraster im Speicher.
+    """Keeps the most recently used site rasters in memory.
 
-    Ein Gebiet sind bei 2 cm rund 6500 x 6500 Pixel, also etwa 170 MB als RGB
-    plus Hoehe plus Maske. Alle 47 gleichzeitig waeren 8 GB pro Arbeitsprozess.
-    Da die Sampleliste nach Gebieten gruppiert ist, reichen wenige.
+    At 2 cm a site is around 6500 x 6500 pixels, i.e. about 170 MB as RGB plus
+    height plus mask. All 47 at once would be 8 GB per worker process. Since the
+    sample list is grouped by site, a few suffice.
     """
 
     def __init__(self, wurzel: Path, groesse: int = 2) -> None:
@@ -89,24 +87,24 @@ class Rasterlager:
 
 
 def farbjitter(bild: np.ndarray, rng: np.random.Generator, staerke: float) -> np.ndarray:
-    """Helligkeit, Kontrast, Farbstich und Gamma -- Wetter und Weissabgleich."""
+    """Brightness, contrast, colour cast and gamma -- weather and white balance."""
     if staerke <= 0:
         return bild
     x = bild.astype(np.float32) / 255.0
-    x *= rng.uniform(1 - 0.30 * staerke, 1 + 0.30 * staerke)                  # Helligkeit
+    x *= rng.uniform(1 - 0.30 * staerke, 1 + 0.30 * staerke)                  # brightness
     mittel = x.mean()
-    x = mittel + (x - mittel) * rng.uniform(1 - 0.30 * staerke, 1 + 0.30 * staerke)  # Kontrast
-    x *= rng.uniform(1 - 0.10 * staerke, 1 + 0.10 * staerke, size=(1, 1, 3))  # Farbstich
+    x = mittel + (x - mittel) * rng.uniform(1 - 0.30 * staerke, 1 + 0.30 * staerke)  # contrast
+    x *= rng.uniform(1 - 0.10 * staerke, 1 + 0.10 * staerke, size=(1, 1, 3))  # colour cast
     x = np.clip(x, 0, 1) ** rng.uniform(1 - 0.25 * staerke, 1 + 0.25 * staerke)
     return (np.clip(x, 0, 1) * 255.0).astype(np.uint8)
 
 
 def videolook(bild: np.ndarray, rng: np.random.Generator, staerke: float) -> np.ndarray:
-    """Weichzeichnung, Sensorrauschen und JPEG-Artefakte.
+    """Blur, sensor noise and JPEG artefacts.
 
-    Das Orthomosaik ist aus vielen Aufnahmen gerechnet und dadurch schaerfer als
-    jedes Einzelbild. Ohne diesen Schritt lernt das Modell auf einer Schaerfe,
-    die es im Einsatz nie zu sehen bekommt.
+    The orthomosaic is computed from many captures and is therefore sharper than
+    any single image. Without this step the model learns on a sharpness it will
+    never see in deployment.
     """
     if staerke <= 0:
         return bild
@@ -122,11 +120,11 @@ def videolook(bild: np.ndarray, rng: np.random.Generator, staerke: float) -> np.
 
 
 class NadirFrames(torch.utils.data.Dataset):
-    """Virtuelle Frames mit metrischer Tiefenwahrheit.
+    """Virtual frames with metric depth truth.
 
-    Die Sampleliste steht vor der Epoche fest und ist nach Gebieten gruppiert --
-    so laeuft der Datenlader durch wenige Raster statt bei jedem Zugriff ein
-    neues von der Platte zu holen. Innerhalb eines Gebietes wird gemischt.
+    The sample list is fixed before the epoch and grouped by site -- that way the
+    data loader walks through few rasters instead of fetching a new one from disk
+    on every access. Within a site the order is shuffled.
     """
 
     def __init__(self, wurzel: Path, split: str, *, crop_px: int = 1536,
@@ -150,11 +148,11 @@ class NadirFrames(torch.utils.data.Dataset):
         self.hoehe_min, self.hoehe_max, self.abstand_min = hoehe_min, hoehe_max, abstand_min
         self.fov_min, self.fov_max = fov_min, fov_max
         self.min_gueltig, self.augment = min_gueltig, augment
-        # Zwei verschiedene Dinge, die `augment` sonst zusammenwirft. Spiegeln ist
-        # Formaugmentierung, Weichzeichnen und JPEG sind Domaenenangleichung.
-        # Zum Messen will man oft nur das zweite: feste Ausschnitte, aber in der
-        # Schaerfe, die spaeter tatsaechlich anliegt. Ohne Angabe verhaelt sich
-        # beides wie `augment` -- das bleibt das alte Verhalten.
+        # Two different things that `augment` would otherwise conflate. Mirroring
+        # is shape augmentation; blur and JPEG are domain matching. For measuring
+        # you often want only the second: fixed crops, but at the sharpness that
+        # will actually be present later. Left unset, both behave like `augment`
+        # -- that stays the old behaviour.
         self.spiegeln = augment if spiegeln is None else spiegeln
         self.domaene = augment if domaene is None else domaene
         self.jitter, self.video = jitter, video
@@ -165,7 +163,7 @@ class NadirFrames(torch.utils.data.Dataset):
         self.set_epoch(0)
 
     def set_epoch(self, epoche: int) -> None:
-        """Neue Wuerfe fuer die Epoche, Gebiete in neuer Reihenfolge."""
+        """New draws for the epoch, sites in a new order."""
         rng = np.random.default_rng(self.seed + 1000 * epoche)
         sites = list(self.sites)
         rng.shuffle(sites)
@@ -174,14 +172,14 @@ class NadirFrames(torch.utils.data.Dataset):
             for site in sites
         }
         if not self.augment:
-            # Validierung und Test bleiben gebietsweise geordnet: keine Updates,
-            # also auch kein Risiko durch lange homogene Folgen, dafuer guter Cache.
+            # Validation and test stay ordered by site: no updates, hence no risk
+            # from long homogeneous runs, and a good cache in exchange.
             self.plan = [(site, saat) for site in sites for saat in pro_site[site]]
             return
 
-        # Je Cachegruppe kurze Bloecke mehrerer Gebiete abwechseln. Damit sieht
-        # der Optimizer nicht ein ganzes Gebiet am Stueck, und jeder Worker kann
-        # trotzdem genau die beteiligten Raster im Cache behalten.
+        # Alternate short blocks of several sites per cache group. That way the
+        # optimizer does not see a whole site in one run, and every worker can
+        # still keep exactly the rasters involved in its cache.
         gruppen = [sites[i : i + self.site_mix] for i in range(0, len(sites), self.site_mix)]
         if len(gruppen) > 1 and len(gruppen[-1]) == 1:
             gruppen[-2].append(gruppen[-1].pop())
@@ -205,19 +203,19 @@ class NadirFrames(torch.utils.data.Dataset):
 
     def geometrie(self, rng: np.random.Generator, breite_m: float, hoehe_m: float,
                   wipfel_m: float) -> tuple[float, float]:
-        """Flughoehe und Kamerakonstante, passend zu Gebietsgroesse und Bestand.
+        """Flight altitude and camera constant, matched to site size and stand.
 
-        Die Kamera muss mit Abstand ueber den hoechsten Wipfeln haengen. Ohne
-        diese Schranke entstuenden Ausschnitte, in denen die Baeume fast bis zur
-        Linse reichen -- ein Aufnahmefall, den es bei uns nicht gibt und der die
-        Tiefenverteilung verzerrt.
+        The camera has to hang well above the tallest treetops. Without that bound
+        there would be crops in which the trees almost reach the lens -- a capture
+        situation that does not occur for us and that skews the depth
+        distribution.
         """
         untergrenze = max(self.hoehe_min, wipfel_m + self.abstand_min)
         obergrenze = max(untergrenze * 1.01, self.hoehe_max)
-        # Die Bodenbreite H/k muss ins Gebiet passen -- in der Breite direkt, in
-        # der Hoehe um das Seitenverhaeltnis entlastet. Unpassende Paare werden
-        # neu gezogen. Frueher wurde stattdessen H nachtraeglich verkleinert;
-        # dadurch konnte die Kamera unter den zugesicherten Wipfelabstand sinken.
+        # The ground width H/k has to fit into the site -- directly in width, and
+        # relieved by the aspect ratio in height. Unsuitable pairs are redrawn.
+        # Previously H was shrunk afterwards instead, which could let the camera
+        # drop below the guaranteed clearance above the treetops.
         passt = 0.98 * min(breite_m, hoehe_m * self.seitenverhaeltnis)
         for _ in range(32):
             H = float(np.exp(rng.uniform(math.log(untergrenze), math.log(obergrenze))))
@@ -225,8 +223,8 @@ class NadirFrames(torch.utils.data.Dataset):
             if H / k <= passt:
                 return H, k
 
-        # Deterministischer, weiterhin physikalisch gueltiger Notfall. Bei einem
-        # zu kleinen Gebiet wird der Bildwinkel enger, nicht die Kamera tiefer.
+        # A deterministic and still physically valid fallback. For a site that is
+        # too small, the field of view narrows, the camera does not descend.
         H = untergrenze
         k = max(k_von_fov(self.fov_max), H / max(passt, 1e-6))
         return H, k
@@ -243,19 +241,19 @@ class NadirFrames(torch.utils.data.Dataset):
         for _ in range(24):
             H_flug, k = self.geometrie(rng, meta["breite_m"], meta["hoehe_m"],
                                        meta.get("hoehe_max_m", 40.0))
-            nb = int(round((H_flug / k) / g0))                              # Fensterbreite im Bodenraster
+            nb = int(round((H_flug / k) / g0))                              # window width in the ground raster
             nh = int(round(nb / self.seitenverhaeltnis))
             if nb < 32 or nh < 32 or nb > B_px or nh > H_px:
                 continue
             x0 = int(rng.integers(0, B_px - nb + 1))
             y0 = int(rng.integers(0, H_px - nh + 1))
             teil = gueltig[y0 : y0 + nh, x0 : x0 + nb]
-            # Grob pruefen reicht und ist bei 6000er Fenstern hundertfach schneller.
+            # A coarse check suffices and is a hundred times faster on 6000 px windows.
             if teil[::8, ::8].mean() >= self.min_gueltig:
                 fenster = (x0, y0, nb, nh, H_flug, k)
                 break
         if fenster is None:
-            # Notfall: das groesste passende Fenster mittig, in der Flughoehe dazu.
+            # Fallback: the largest fitting window, centred, with the altitude to match.
             nb = min(B_px, int(H_px * self.seitenverhaeltnis))
             nh = int(round(nb / self.seitenverhaeltnis))
             x0, y0 = (B_px - nb) // 2, (H_px - nh) // 2
@@ -272,21 +270,21 @@ class NadirFrames(torch.utils.data.Dataset):
         bild = cv2.resize(np.ascontiguousarray(rgb[y0 : y0 + nh, x0 : x0 + nb]),
                           (sb, sh), interpolation=interp)
 
-        # Ungueltige nDSM-Pixel liegen auf Platte als 0. Werden Hoehe und Maske
-        # unabhaengig skaliert, mischt INTER_AREA diese Nullen an Lochraendern in
-        # gueltige Zielpixel. Normalisiertes, maskiertes Resampling verhindert das.
+        # Invalid nDSM pixels are stored on disk as 0. If height and mask are
+        # scaled independently, INTER_AREA mixes those zeros into valid target
+        # pixels at hole edges. Normalised, masked resampling prevents that.
         teil_maske = gueltig[y0 : y0 + nh, x0 : x0 + nb].astype(np.float32)
         teil_hoehe = ndsm_cm[y0 : y0 + nh, x0 : x0 + nb].astype(np.float32) / 100.0
         gewicht = cv2.resize(teil_maske, (sb, sh), interpolation=interp)
         summe = cv2.resize(teil_hoehe * teil_maske, (sb, sh), interpolation=interp)
         hoehe = summe / np.maximum(gewicht, 1e-6)
-        # Nur Pixel behalten, deren Resampling-Fussabdruck fast vollstaendig
-        # gueltig war. So gelangen keine Fuellkanten in Loss oder Kennzahlen.
+        # Keep only pixels whose resampling footprint was almost entirely valid.
+        # That keeps fill edges out of the loss and out of the metrics.
         maske = gewicht >= 0.99
 
         if self.spiegeln:
-            # Nur Spiegelungen, keine Vierteldrehung: die wuerde das
-            # Seitenverhaeltnis kippen, auf das die ganze Geometrie aufbaut.
+            # Mirroring only, no quarter turns: those would flip the aspect ratio
+            # the whole geometry is built on.
             if rng.random() < 0.5:
                 bild, hoehe, maske = (a[:, ::-1] for a in (bild, hoehe, maske))
             if rng.random() < 0.5:
@@ -298,13 +296,13 @@ class NadirFrames(torch.utils.data.Dataset):
 
         tiefe = (H_flug - hoehe).astype(np.float32)
         if self.strahl_tiefe:
-            # Abstand entlang des Sehstrahls statt entlang der optischen Achse.
+            # Distance along the viewing ray instead of along the optical axis.
             f_px = k * sb
             gy, gx = np.mgrid[0:sh, 0:sb].astype(np.float32)
             r2 = ((gx - (sb - 1) / 2) ** 2 + (gy - (sh - 1) / 2) ** 2) / (f_px * f_px)
             tiefe *= np.sqrt(1.0 + r2)
 
-        maske &= tiefe > 1.0    # Kamera im Baum waere kein sinnvolles Ziel.
+        maske &= tiefe > 1.0    # a camera inside a tree would be no sensible target
         return {
             "bild": torch.from_numpy(np.ascontiguousarray(bild.transpose(2, 0, 1))),
             "tiefe": torch.from_numpy(tiefe),
@@ -318,14 +316,14 @@ class NadirFrames(torch.utils.data.Dataset):
 
 
 def auf_modell(bild_uint8: torch.Tensor, modellgroesse: int = 1536) -> torch.Tensor:
-    """uint8-Batch auf die Eingangsgroesse von Depth Pro bringen und normieren.
+    """Bring a uint8 batch to the input size of Depth Pro and normalise it.
 
-    Genau die Stauchung auf 1536 x 1536, die auch der Bildprozessor von Depth Pro
-    vornimmt -- das Seitenverhaeltnis geht dabei verloren, und zwar mit Absicht:
-    bei der Anwendung passiert dasselbe.
+    Exactly the squeeze to 1536 x 1536 that the Depth Pro image processor also
+    performs -- the aspect ratio is lost in the process, deliberately: the same
+    thing happens at inference.
 
-    Bewusst auf der GPU und nicht im Datenlader: als float32 waere ein einziges
-    1536er Bild 28 MB, die sonst durch die Prozessgrenze muessten.
+    Deliberately on the GPU and not in the data loader: as float32 a single 1536
+    image would be 28 MB that would otherwise cross the process boundary.
     """
     x = bild_uint8.float().div_(255.0)
     if x.shape[-1] != modellgroesse or x.shape[-2] != modellgroesse:

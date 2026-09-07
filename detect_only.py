@@ -1,15 +1,15 @@
-"""Nur die DeepForest-Detektionen anschauen, ohne Klassifikation.
+"""Look at the DeepForest detections only, without classification.
 
-Zeichnet alle Rohdetektionen eines Frames ein und hebt hervor, welche davon die
-Filter aus infer_species.py ueberstehen (--min-score, --min-box-px). Damit laesst
-sich beurteilen, ob die Baum-Instanzen ueberhaupt stimmen -- unabhaengig davon,
-was DINOvTree spaeter daraus macht.
+Draws all raw detections of a frame and highlights which of them survive the
+filters from infer_species.py (--min-score, --min-box-px). That makes it
+possible to judge whether the tree instances are right at all -- independently
+of what DINOvTree later makes of them.
 
-Farbe = Detektor-Konfidenz:
-    rot < 0.2, orange < 0.35, gelb < 0.5, gruen >= 0.5
-Dicke Boxen = uebersteht die Filter und wuerde klassifiziert werden.
+Colour = detector confidence:
+    red < 0.2, orange < 0.35, yellow < 0.5, green >= 0.5
+Thick boxes = survives the filters and would be classified.
 
-Beispiel:
+Example:
     python detect_only.py --input /cold/Mahfuz/chosen_frames --out results_detect
 """
 
@@ -24,11 +24,11 @@ import pandas as pd
 
 from infer_species import IMAGE_SUFFIXES, REPO_ROOT, build_detector
 
-SCORE_COLORS = [  # (Schwelle, BGR)
-    (0.20, (60, 60, 220)),    # rot
+SCORE_COLORS = [  # (threshold, BGR)
+    (0.20, (60, 60, 220)),    # red
     (0.35, (60, 150, 240)),   # orange
-    (0.50, (60, 220, 240)),   # gelb
-    (1.01, (80, 200, 80)),    # gruen
+    (0.50, (60, 220, 240)),   # yellow
+    (1.01, (80, 200, 80)),    # green
 ]
 
 
@@ -63,7 +63,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--input", type=Path, default=Path("/cold/Mahfuz/chosen_frames"))
     parser.add_argument("--out", type=Path, default=REPO_ROOT / "results_detect")
-    parser.add_argument("--frames-per-folder", type=int, default=0, help="0 = alle Frames.")
+    parser.add_argument("--frames-per-folder", type=int, default=0, help="0 = every frame.")
     parser.add_argument("--min-score", type=float, default=0.35)
     parser.add_argument("--min-box-px", type=float, default=25.0)
     parser.add_argument("--max-trees-per-frame", type=int, default=150)
@@ -111,7 +111,7 @@ def main() -> None:
                 & (boxes["box_w"] >= args.min_box_px)
                 & (boxes["box_h"] >= args.min_box_px)
             )
-            # Der Rangfilter (--max-trees-per-frame) greift erst nach den Schwellen.
+            # The rank filter (--max-trees-per-frame) only applies after the thresholds.
             ranked = boxes[passes].sort_values("score", ascending=False).head(args.max_trees_per_frame).index
             boxes["kept"] = boxes.index.isin(ranked)
 
