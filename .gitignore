@@ -216,3 +216,11 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Projekt-spezifisch
+checkpoints/
+results*/
+lightning_logs/
+
+# Ergebnis-Archive: results*/ oben matcht nur Ordner, nicht die Zips daneben
+results*.zip
